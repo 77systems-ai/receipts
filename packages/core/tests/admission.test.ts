@@ -195,6 +195,48 @@ test("legacy dispatched audit entries cannot be reclaimed by the new registry", 
   assert.equal(registry.claim(action).verdict, "DUPLICATE");
 });
 
+test("a winning claim between snapshot and append validation makes the loser retry to DUPLICATE", () => {
+  const base = new MemoryAuditStore();
+  const winner = createIdempotencyRegistry({ store: base, now: () => start });
+  let reads = 0;
+  const interleaved: AuditStore = {
+    read() {
+      if (++reads === 2) assert.equal(winner.claim(action).verdict, "CLAIMED");
+      return base.read();
+    },
+    append(entry, expectedLength) { base.append(entry, expectedLength); },
+  };
+  const loser = createIdempotencyRegistry({ store: interleaved, now: () => start });
+  const result = loser.claim(action);
+  assert.equal(result.verdict, "DUPLICATE");
+  assert.equal(result.reason, "active_claim");
+  assert.equal(base.read().filter((entry) => entry.event === "claim").length, 1);
+  assert.equal(base.read().filter((entry) => entry.event === "duplicate").length, 1);
+  validateAuditChain(exportAuditChain(base));
+});
+
+test("a budget consumed between dispatch snapshot and append triggers policy reevaluation", () => {
+  const base = new MemoryAuditStore();
+  const winner = createIdempotencyRegistry({ store: base, now: () => start });
+  const first = won(winner.claim(action));
+  const second = won(winner.claim(nextAction()));
+  const policy = { rateLimits: [{ id: "one-dispatch", maxWrites: 1, windowMs: 1000, surface: action.surface }] };
+  let reads = 0;
+  const interleaved: AuditStore = {
+    read() {
+      if (++reads === 2) assert.equal(winner.dispatch(first, policy).verdict, "AUTHORIZED");
+      return base.read();
+    },
+    append(entry, expectedLength) { base.append(entry, expectedLength); },
+  };
+  const loser = createIdempotencyRegistry({ store: interleaved, now: () => start });
+  const result = loser.dispatch(second, policy);
+  assert.equal(result.verdict, "policy_denied");
+  assert.equal(result.ruleId, "one-dispatch");
+  assert.equal(base.read().filter((entry) => entry.event === "attempt").length, 1);
+  validateAuditChain(exportAuditChain(base));
+});
+
 test("export preserves JSONL envelopes and detects entry, link, and head tampering offline", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "receipts-chain-export-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));

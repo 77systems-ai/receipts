@@ -290,6 +290,12 @@ export function createAuditEntry(write: OutwardWrite, event: AuditEvent = "class
 
 function appendEntry(entry: AuditEntry, store: AuditStore, expectedLength?: number, trustedRead = false, trustedAdmission = false): AuditEntry {
   const entries = readStore(store);
+  // A caller's proposal was built against its earlier snapshot. If that tail
+  // changed, retry the decision before interpreting stale lifecycle metadata.
+  // The store still compares the same length atomically while holding its lock.
+  if (expectedLength !== undefined && expectedLength !== entries.length) {
+    throw new ReceiptsError("audit_conflict", "The audit changed before validation. No entry was written.");
+  }
   validateEvidence(entry.evidence);
   const copy = normalizedEntry(entry, entries, trustedRead, trustedAdmission);
   validateEntry(copy, entries);
