@@ -2,11 +2,40 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.77systems-ai/receipts",
   "description": "Verification for every AI agent: destination receipts, package binding, and retry laws.",
-  "repository": {"url": "https://github.com/77systems-ai/receipts", "source": "github"},
-  "version": "0.1.0",
-  "packages": [{
-    "registryType": "npm", "identifier": "@77systems/receipts-mcp", "version": "0.1.0",
-    "transport": {"type": "stdio"},
-    "environmentVariables": [{"name": "RECEIPTS_AUDIT_PATH", "description": "Local append-only audit JSONL path. Defaults to .receipts/audit.jsonl in the process working directory.", "format": "filepath", "isRequired": false, "isSecret": false}]
-  }]
+  "repository": {
+    "url": "https://github.com/77systems-ai/receipts",
+    "source": "github"
+  },
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@77systems/receipts-mcp",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "RECEIPTS_AUDIT_PATH",
+          "description": "Local append-only audit JSONL path. Defaults to .receipts/audit.jsonl in the process working directory.",
+          "format": "filepath",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RECEIPTS_GITHUB_REPO",
+          "description": "Exact GitHub owner/repo for independent issue read-back. Omit for cooperative-only use.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "GITHUB_TOKEN",
+          "description": "Local GitHub token authorized to read the configured repository. Sent only to the GitHub API for authentication.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
 }

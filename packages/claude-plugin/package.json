@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-claude-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Automatic Receipts feedback and verification skill for Claude Code.",
   "license": "MIT",
@@ -32,7 +32,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@77systems/receipts-core": "0.1.0"
+    "@77systems/receipts-core": "0.2.0"
   },
   "publishConfig": {
     "access": "public"

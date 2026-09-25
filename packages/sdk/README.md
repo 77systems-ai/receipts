@@ -1,58 +1,62 @@
 # Receipts SDK
 
-Wrap the actual outward-write call so an agent cannot return a completion receipt without observation, binding, and a durable audit entry. The SDK computes `sha256:` plus the SHA-256 hex digest of the approved payload using deterministic JSON serialization. It never retries writes.
+Wrap the actual outward-write call, persist its approved action before dispatch, and refuse duplicate execution after an uncertain outcome. Payloads are hashed in memory using deterministic JSON serialization; the local audit stores digests and identifiers, never payload content or provider error messages.
 
 ```ts
-import { registerSurface } from "@77systems/receipts-core";
-import { createReceipts, digestPayload } from "@77systems/receipts-sdk";
+import { randomUUID } from "node:crypto";
+import { createReceipts } from "@77systems/receipts-sdk";
 
-registerSurface({
-  name: "my-posts",
-  idPattern: /^post-[0-9]+$/,
-  async observe(write) {
-    // Your trusted adapter reads the actual provider, including the account.
-    const post = await destination.readByActionKey(write.idempotencyKey);
-    const observedDigest = digestPayload(post.approvedPayloadFields);
-    return {
-      destinationId: post.id,
-      packageDigest: observedDigest,
-      evidence: [{
-        source: "provider", detail: "Authenticated account and payload read-back",
-        destinationId: post.id, packageDigest: observedDigest,
-      }],
-    };
-  },
-});
-
-const receipts = createReceipts(); // Default append-only JSONL audit store.
+const receipts = createReceipts({ connector }); // Trusted local connector code.
 const receipt = await receipts.execute({
-  surface: "my-posts",
+  surface: connector.surface,
   attemptId: "attempt-001",
-  idempotencyKey: "account-42:approved-post-001",
-  payload: { text: "The approved post" },
-  execute: ({ payload, idempotencyKey }) => destination.post(payload, { idempotencyKey }),
+  actionId: randomUUID(), // Save and reuse this UUID for this approved action.
+  destinationAccount: "github:77systems-ai/receipts-test",
+  approvalId: "approval-001", // Identifier from your own approval flow.
+  payload: approvedPayload,
+  execute: ({ payload, idempotencyKey }) => destination.write(payload, { idempotencyKey }),
 });
-
-// Throws for uncertain or unverified results; only then may the bot say posted.
-const destinationId = receipts.claimComplete(receipt);
 ```
 
-`destination` above is your provider client. For a runnable example without credentials or network requests, run `npm run demo` from `examples/grok-bot` in the source repository.
+`connector`, `destination`, and `approvedPayload` above are local application objects. The SDK does not issue approvals. See the runnable [GitHub example](../../examples/github-issues) for an independently verified integration and the [Grok example](../../examples/grok-bot) for an offline cooperative demonstration.
 
-## Uncertain writes
+## Action identity and uncertain writes
 
-An exception after the executor callback starts becomes `delivery_unknown` automatically. Even a callback that returns normally must pass the registered observer before it can complete. An executor's success flag, object ID, or asserted digest is never evidence. The original error is not copied into audit text, where it could disclose request credentials.
+Every execution requires an exact `destinationAccount`, a caller-generated UUID `actionId`, an explicit `approvalId`, and a unique `attemptId`. The same account and action cannot execute twice, even if a caller changes the attempt, provider idempotency key, or content. Reusing an approval for a new action on that account is also refused. A new action with a new approval may intentionally contain identical content; digest equality alone never blocks it. Persist and share these identifiers across every process handling an action.
 
-Call `receipts.reconcile({ surface, attemptId, payload, destinationId? })` to read and bind the existing destination object. A human-supplied ID is a pointer for the adapter to inspect, not a bypass around payload verification. Reconciliation never invokes the write callback.
+The SDK atomically appends an uncertain claim before dispatch. A thrown callback becomes `delivery_unknown`; its raw error is never written to the audit. A normal callback return is not evidence either. An object ID in the write response cannot mint a receipt. The SDK never automatically retries a write.
 
-The observer must compute its returned digest from the real read-back fields, verify the correct provider/account, and return evidence naming the same destination ID and digest. The SDK verifies those structural bindings; it cannot authenticate an adapter's implementation. Register only trusted adapters.
+```ts
+const verified = await receipts.reconcile({
+  surface: connector.surface,
+  attemptId: "attempt-001",
+  payload: approvedPayload,
+  locator: { issueNumber: 42 }, // Known provider coordinates; never audited.
+});
+receipts.claimComplete(verified, { requireIndependent: true });
+```
+
+Reconciliation reads the original action identity from its execution claim, verifies the approved payload digest, and invokes only the read-only connector. Supply a canonical `destinationId` or connector-specific `locator`. A connector can be configured on `createReceipts` or supplied per `reconcile`/`recheck`. Connector code is trusted local executable configuration, never code supplied through remote tool arguments. Read failures remain uncertain; persistence failures throw.
+
+## Proof source and history
+
+Every execution receipt includes the account, object ID (or `null` while unknown), action ID, approval ID, package digest, `evidenceSource`, `independentlyVerified`, and `observedAt`. The time is `null` until a destination observation occurs.
+
+- Core-executed connector reads have `evidenceSource: "receipts-read"` and `independentlyVerified: true`.
+- A registered `SurfaceDef.observe` callback is the permanent cooperative path. Even if it labels its evidence `provider`, its receipts have `evidenceSource: "host-supplied"` and `independentlyVerified: false`.
+
+`claimComplete(receipt)` checks durable scoped proof. Add `{ requireIndependent: true }` when your application requires a connector read. A caller cannot change the returned source flags to promote cooperative evidence.
+
+`recheck({ surface, attemptId, payload, destinationId, connector? })` appends another observation. Its timestamp describes that new read. The original receipt remains valid historical evidence at its original time; a later content edit yields a separate `package_unverified` recheck. Do not describe a historical receipt as a live check.
+
+## Cooperative observers
+
+Registered cooperative observers return `{ destinationId, packageDigest, evidence }`. They must read the intended account and exact object, calculate the digest from the observed content using `digestPayload`, and provide provider/human evidence for the same ID and digest. Host assertions remain explicitly host-supplied regardless of claimed provenance. This preserves chat integrations without pretending Receipts independently authenticated their reads.
 
 ## Execution and persistence boundary
 
-Before calling the executor, the SDK atomically appends an uncertain execution claim. A crash at any later point leaves an unknown attempt that requires observation. A duplicate attempt ID, stable idempotency key, or same surface/payload digest is refused before execution. All processes must share the same durable store and stable action keys. Custom stores must implement the `expectedLength` compare-and-append contract atomically.
+All callers must share one durable `AuditStore`. Custom stores must implement synchronous reads and atomic `append(entry, expectedLength)` without overwriting entries. A failed required append cannot return completion. The default store is local, append-only, and hash chained.
 
-Use account identity and intended destination in the approved payload and scope idempotency keys to the logical action. This conservative wrapper also blocks intentionally repeated identical packages; give a genuinely new approved action an explicit identity in its payload. It does not expose a write-retry or rearm method.
+Approved payloads are detached and recursively frozen before dispatch. Only plain JSON values are supported; cycles, undefined values, non-finite numbers, sparse arrays, getters, class instances, and symbol keys are rejected. Object keys sort; array order matters. The encoding is `receipts-json-v1`, not RFC 8785.
 
-Payloads are detached and recursively frozen before dispatch. Only plain JSON values are supported; cycles, undefined values, non-finite numbers, sparse arrays, getters, class instances, and symbol keys are rejected. Object keys are sorted; array order matters. The serialization version is `receipts-json-v1` and is not advertised as RFC 8785.
-
-If any required audit append fails, the wrapper throws and cannot return completion. `claimComplete` rechecks the persisted classification and binding. The wrapper enforces its own code path; it cannot prevent application code from calling a provider directly or a language model from writing an unsupported sentence outside that path.
+The wrapper governs its own executor path. Application code that calls a provider directly bypasses it; the SDK is not a sandbox for arbitrary code or a language model's final wording.

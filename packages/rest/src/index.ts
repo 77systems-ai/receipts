@@ -3,8 +3,8 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { AddressInfo } from 'node:net';
 import {
-  bind, classify, record, verify, ReceiptsError,
-  type AuditEntry, type AuditStore, type OutwardWrite,
+  bind, classify, record, verify, getReceipt, observeDestination, ReceiptsError,
+  type AuditEntry, type AuditStore, type OutwardWrite, type TrustedConnector, type ConnectorRequest, type ReceiptScope,
 } from '@77systems/receipts-core';
 
 class InputError extends Error {}
@@ -33,10 +33,35 @@ function entryInput(value: unknown): AuditEntry {
   return data as unknown as AuditEntry;
 }
 
-export interface RestOptions { store?: AuditStore }
+function scopeInput(value: unknown): ReceiptScope | undefined {
+  if (value === undefined) return undefined;
+  const data = object(value);
+  const scope: ReceiptScope = {};
+  for (const key of ['destinationAccount','actionId','surface','attemptId'] as const) {
+    if (data[key] !== undefined) scope[key] = requiredString(data[key],key);
+  }
+  return scope;
+}
 
-/** Thin trusted-local transport. No provider reads, outward writes, or user authentication. */
-export function createReceiptsApp({ store }: RestOptions = {}) {
+function connectorInput(data: Record<string, unknown>): ConnectorRequest {
+  const request: ConnectorRequest = {
+    surface: requiredString(data.surface,'surface'), attemptId: requiredString(data.attemptId,'attemptId'),
+    actionId: requiredString(data.actionId,'actionId'), destinationAccount: requiredString(data.destinationAccount,'destinationAccount'),
+    approvalId: requiredString(data.approvalId,'approvalId'), packageDigest: requiredString(data.packageDigest,'packageDigest'),
+  };
+  if (data.destinationId !== undefined) request.destinationId = requiredString(data.destinationId,'destinationId');
+  if (data.locator !== undefined) {
+    const locator = object(data.locator);
+    if (Object.values(locator).some(value => typeof value !== 'string' && (typeof value !== 'number' || !Number.isFinite(value)))) throw new InputError('Locator values must be strings or numbers.');
+    request.locator = locator as Record<string,string|number>;
+  }
+  return request;
+}
+
+export interface RestOptions { store?: AuditStore; connectors?: readonly TrustedConnector[] }
+
+/** Loopback-only transport; independent reads use connectors configured locally at startup. */
+export function createReceiptsApp({ store, connectors = [] }: RestOptions = {}) {
   const app = new Hono();
   app.use('*', async (context, next) => {
     const url = new URL(context.req.url);
@@ -66,13 +91,26 @@ export function createReceiptsApp({ store }: RestOptions = {}) {
   });
   app.post('/bind', async (context) => {
     const data = object(await context.req.json());
-    return context.json(bind(requiredString(data.destinationId, 'destinationId'), requiredString(data.packageDigest, 'packageDigest'), store));
+    return context.json(bind(requiredString(data.destinationId, 'destinationId'), requiredString(data.packageDigest, 'packageDigest'), store, scopeInput(data.scope)));
   });
-  app.get('/verify', (context) => context.json({ verdict: verify(
-    requiredString(context.req.query('destinationId'), 'destinationId'),
-    requiredString(context.req.query('packageDigest'), 'packageDigest'), store,
-  ) }));
-  app.notFound((context) => context.json({ error: { code: 'not_found', message: 'Use POST /classify, /record, /bind or GET /verify.' } }, 404));
+  app.get('/verify', (context) => {
+    const id = requiredString(context.req.query('destinationId'), 'destinationId');
+    const digest = requiredString(context.req.query('packageDigest'), 'packageDigest');
+    const scope = { destinationAccount: context.req.query('destinationAccount'), actionId: context.req.query('actionId') };
+    return context.json(getReceipt(id, digest, store, scope) ?? {
+      verdict: verify(id, digest, store, scope), evidenceSource: 'host-supplied', independentlyVerified: false, observedAt: null,
+    });
+  });
+  for (const recheck of [false,true]) {
+    app.post(recheck ? '/recheck' : '/observe', async (context) => {
+      const data=object(await context.req.json());
+      const request = connectorInput(data);
+      const connector=connectors.find(item=>item.surface===data.surface);
+      if(!connector) throw new ReceiptsError('connector_not_configured','Configure this connector locally before requesting an independent read.');
+      return context.json(await observeDestination(connector,{...request,recheck},store));
+    });
+  }
+  app.notFound((context) => context.json({ error: { code: 'not_found', message: 'Use POST /classify, /record, /bind, /observe, /recheck or GET /verify.' } }, 404));
   app.onError((error, context) => {
     if (error instanceof SyntaxError || error instanceof InputError) {
       return context.json({ error: { code: 'invalid_input', message: error instanceof SyntaxError ? 'Invalid JSON.' : error.message } }, 400);
@@ -85,8 +123,8 @@ export function createReceiptsApp({ store }: RestOptions = {}) {
 
 export interface RestServerOptions extends RestOptions { port?: number }
 
-export async function startRestServer({ port = 3101, store }: RestServerOptions = {}) {
-  const app = createReceiptsApp(store ? { store } : {});
+export async function startRestServer({ port = 3101, store, connectors }: RestServerOptions = {}) {
+  const app = createReceiptsApp({store,connectors});
   const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port });
   if (!server.listening) await new Promise<void>((resolve, reject) => {
     server.once('listening', resolve);

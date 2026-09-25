@@ -1,0 +1,16 @@
+{
+  "name": "@77systems/receipts-github-example",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "demo": "node dist/index.js"
+  },
+  "dependencies": {
+    "@77systems/receipts-core": "0.2.0",
+    "@77systems/receipts-sdk": "0.2.0",
+    "@77systems/receipts-github": "0.2.0"
+  }
+}

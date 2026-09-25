@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Destination verification and append-only receipts for every AI agent.",
   "type": "module",
   "license": "MIT",

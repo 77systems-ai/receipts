@@ -4,10 +4,11 @@ import {
   readFileSync, renameSync, unlinkSync, writeFileSync, writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { classify, validateDigest, validateEvidence } from "./classify.js";
+import { classify, digestPackage, validateDigest, validateEvidence } from "./classify.js";
 import {
   ReceiptsError, type AuditEntry, type AuditEvent, type AuditStore, type Binding,
-  type Classification, type OutwardWrite, type Verdict,
+  type Classification, type OutwardWrite, type Verdict, type Receipt, type ReceiptScope,
+  type ConnectorRequest, type DestinationConnector,
 } from "./types.js";
 
 /** Stable JSON serialization for hashing; unsupported values fail closed. */
@@ -36,24 +37,112 @@ function invalid(message: string): never {
   throw new ReceiptsError("invalid_entry", message);
 }
 
+// This capability is intentionally object identity, never a serializable flag.
+const connectorEntries = new WeakSet<object>();
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const summaries = {
+  provider: "Destination evidence supplied by the host.",
+  human: "Destination evidence supplied by the host.",
+  executor: "Execution evidence supplied by the host.",
+  binding: "Bound an audited destination observation to the approved package digest.",
+} as const;
+
+function requireAction(write: OutwardWrite): void {
+  if (!write.actionId || !write.destinationAccount || !write.approvalId) {
+    throw new ReceiptsError("action_identity_required", "New audit entries require actionId, destinationAccount, and approvalId.");
+  }
+  classify(write);
+}
+
+function inScope(entry: AuditEntry, scope?: ReceiptScope): boolean {
+  return !scope || (["destinationAccount", "actionId", "surface", "attemptId"] as const)
+    .every((key) => scope[key] === undefined || (key === "actionId"
+      ? entry.actionId?.toLowerCase() === scope.actionId?.toLowerCase() : entry[key] === scope[key]));
+}
+
+function sameScope(a: OutwardWrite, b: OutwardWrite): boolean {
+  return a.surface === b.surface && a.destinationAccount === b.destinationAccount && a.actionId?.toLowerCase() === b.actionId?.toLowerCase();
+}
+
+function timestamp(value: string): string {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) invalid("A valid timestamp is required.");
+  return new Date(value).toISOString();
+}
+
 function matchesObservation(entry: AuditEntry, destinationId: string, digest: string): boolean {
-  return entry.event === "observation" && entry.destinationId === destinationId && entry.packageDigest === digest
-    && entry.evidence.some((evidence) => (evidence.source === "provider" || evidence.source === "human")
+  return (entry.event === "observation" || entry.event === "recheck") && entry.destinationId === destinationId
+    && entry.packageDigest === digest && entry.evidence.some((evidence) =>
+      (evidence.source === "provider" || evidence.source === "human")
       && evidence.destinationId === destinationId && evidence.packageDigest === digest);
+}
+
+/** Strict storage allowlist: descriptions and external references are digested, never persisted. */
+function normalizedEntry(input: AuditEntry, previous: readonly AuditEntry[], trustedRead = false): AuditEntry {
+  requireAction(input);
+  if (typeof input.id !== "string" || !uuidPattern.test(input.id)) {
+    invalid("New audit entry IDs must be UUIDs.");
+  }
+  const entry: AuditEntry = {
+    id: input.id, timestamp: timestamp(input.timestamp), event: input.event, verdict: input.verdict,
+    surface: input.surface, attemptId: input.attemptId, actionId: input.actionId,
+    destinationAccount: input.destinationAccount, approvalId: input.approvalId,
+    packageDigest: input.packageDigest,
+    evidenceSource: trustedRead ? "receipts-read" : "host-supplied", independentlyVerified: trustedRead,
+    evidence: input.evidence.map((item) => ({
+      source: item.source, detail: summaries[item.source],
+      ...(item.detailDigest ? { detailDigest: item.detailDigest } : item.detail !== summaries[item.source] ? { detailDigest: digestPackage(item.detail) } : {}),
+      ...(item.destinationId !== undefined ? { destinationId: item.destinationId } : {}),
+      ...(item.packageDigest !== undefined ? { packageDigest: item.packageDigest } : {}),
+      ...(item.observedAt !== undefined ? { observedAt: timestamp(item.observedAt) } : {}),
+      ...(input.event === "binding" && item.source === "binding" && item.reference && uuidPattern.test(item.reference) ? { reference: item.reference }
+        : item.referenceDigest ? { referenceDigest: item.referenceDigest }
+        : item.reference ? { referenceDigest: digestPackage(item.reference) } : {}),
+    })),
+  };
+  for (const key of ["destinationId", "boundPackageDigest", "idempotencyKey", "neverReached", "writeMayHaveHappened", "publicObjectExists"] as const) {
+    if (input[key] !== undefined) Object.assign(entry, { [key]: input[key] });
+  }
+  if (input.rearm) entry.rearm = { causeFixed: input.rearm.causeFixed, previousDigest: input.rearm.previousDigest, previousAttemptId: input.rearm.previousAttemptId };
+  const observedEvidence = input.evidence.find((item) => (item.source === "provider" || item.source === "human")
+    && item.destinationId === input.destinationId);
+  if (input.event === "observation" || input.event === "recheck" || observedEvidence) {
+    entry.observedAt = timestamp(observedEvidence?.observedAt ?? input.timestamp);
+    entry.observedPackageDigest = observedEvidence?.packageDigest;
+  }
+  if (input.event === "binding") {
+    const reference = input.evidence.find((item) => item.source === "binding"
+      && item.destinationId === input.destinationId && item.packageDigest === input.packageDigest)?.reference;
+    if (reference !== undefined && !uuidPattern.test(reference)) {
+      invalid("A binding reference must be an audit entry UUID.");
+    }
+    const observation = previous.find((item) => item.id === reference);
+    if (observation) {
+      entry.evidenceSource = observation.evidenceSource === "receipts-read" ? "receipts-read" : "host-supplied";
+      entry.independentlyVerified = entry.evidenceSource === "receipts-read";
+      entry.observedAt = observation.observedAt ?? observation.timestamp;
+      entry.observedPackageDigest = observation.observedPackageDigest ?? observation.packageDigest;
+    }
+  }
+  return detached(entry);
 }
 
 function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void {
   if (!entry || typeof entry !== "object") invalid("An audit entry is required.");
   if (typeof entry.id !== "string" || !entry.id.trim()) invalid("Every entry needs an ID.");
   if (typeof entry.timestamp !== "string" || !Number.isFinite(Date.parse(entry.timestamp))) invalid("Every entry needs a valid timestamp.");
-  if (!["attempt", "classification", "observation", "binding"].includes(entry.event)) invalid("Unknown audit event.");
+  if (!["attempt", "classification", "observation", "binding", "recheck"].includes(entry.event)) invalid("Unknown audit event.");
   validateEvidence(entry.evidence);
   if (!entry.evidence.length) invalid("Every audit entry needs evidence explaining its verdict.");
+  if (entry.evidenceSource !== undefined && !["host-supplied", "receipts-read"].includes(entry.evidenceSource)) invalid("Unknown evidence source.");
+  if (entry.independentlyVerified !== undefined && entry.independentlyVerified !== (entry.evidenceSource === "receipts-read")) invalid("Independent verification requires a connector read.");
+  if (entry.observedAt !== undefined && !Number.isFinite(Date.parse(entry.observedAt))) invalid("Observation timestamp is invalid.");
+  if (entry.observedPackageDigest !== undefined) validateDigest(entry.observedPackageDigest);
   const classification = classify(entry);
   if (entry.verdict !== classification.verdict) invalid("The recorded verdict contradicts its evidence.");
   if (previous.some((item) => item.id === entry.id)) throw new ReceiptsError("duplicate_entry", `Entry ${entry.id} is already recorded.`);
   const sameAttempt = previous.filter((item) => item.attemptId === entry.attemptId);
-  if (sameAttempt.some((item) => item.surface !== entry.surface || item.packageDigest !== entry.packageDigest)) {
+  if (sameAttempt.some((item) => item.surface !== entry.surface || item.packageDigest !== entry.packageDigest
+    || item.actionId !== entry.actionId || item.destinationAccount !== entry.destinationAccount || item.approvalId !== entry.approvalId)) {
     invalid("An attempt ID cannot change surface or approved package digest.");
   }
   if (sameAttempt.some((item) => item.idempotencyKey && entry.idempotencyKey && item.idempotencyKey !== entry.idempotencyKey)) {
@@ -65,6 +154,11 @@ function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void
   if (entry.event === "attempt" && sameAttempt.some((item) => item.event === "attempt")) {
     invalid("An attempt has already been claimed.");
   }
+  if (entry.event === "attempt" && previous.some((item) => item.destinationAccount === entry.destinationAccount
+    && item.actionId?.toLowerCase() === entry.actionId?.toLowerCase() && item.attemptId !== entry.attemptId
+    && (item.writeMayHaveHappened || item.destinationId || item.verdict !== "prewrite"))) {
+    throw new ReceiptsError("duplicate_attempt", "This action already has a possible write. Observe the existing destination instead.");
+  }
   if (classification.mayRearm) {
     const priorAttempt = previous.filter((item) => item.attemptId === entry.rearm!.previousAttemptId);
     if (!priorAttempt.length || priorAttempt.some((item) => item.surface !== entry.surface
@@ -73,14 +167,14 @@ function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void
       throw new ReceiptsError("invalid_rearm", "Rearming requires an audited prewrite attempt with the previous digest and affirmative never-reached evidence.");
     }
   }
-  if (entry.event === "observation") {
+  if (entry.event === "observation" || entry.event === "recheck") {
     if (!entry.destinationId || !entry.evidence.some((evidence) =>
       (evidence.source === "provider" || evidence.source === "human") && evidence.destinationId === entry.destinationId)) {
       invalid("An observation needs provider or human evidence for the exact destination object.");
     }
     if (previous.some((item) => item.destinationId === entry.destinationId
-      && item.surface === entry.surface && item.packageDigest === entry.packageDigest
-      && item.attemptId !== entry.attemptId)) {
+      && item.surface === entry.surface && item.destinationAccount === entry.destinationAccount
+      && item.packageDigest === entry.packageDigest && item.attemptId !== entry.attemptId)) {
       throw new ReceiptsError("ambiguous_destination", "This destination object and digest already belong to another attempt. Reconcile the original attempt instead.");
     }
   }
@@ -89,10 +183,12 @@ function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void
     const reference = entry.evidence.find((evidence) => evidence.source === "binding"
       && evidence.destinationId === entry.destinationId && evidence.packageDigest === entry.packageDigest)?.reference;
     const observation = previous.find((item) => item.id === reference);
-    if (!observation || observation.surface !== entry.surface || observation.attemptId !== entry.attemptId
+    if (!observation || !sameScope(observation, entry) || observation.attemptId !== entry.attemptId
       || !matchesObservation(observation, entry.destinationId!, entry.packageDigest)) {
       throw new ReceiptsError("observation_required", "Binding requires an earlier audited observation of this object and exact package digest.");
     }
+    if (entry.evidenceSource !== undefined && (entry.evidenceSource !== (observation.evidenceSource ?? "host-supplied")
+      || entry.observedAt !== (observation.observedAt ?? observation.timestamp))) invalid("Binding provenance must match its exact observation.");
   } else if (classification.verdict === "complete") {
     if (!previous.some((item) => item.event === "binding" && item.verdict === "complete"
       && item.surface === entry.surface && item.attemptId === entry.attemptId
@@ -126,68 +222,147 @@ function readStore(store: AuditStore): readonly AuditEntry[] {
 }
 
 export function createAuditEntry(write: OutwardWrite, event: AuditEvent = "classification"): AuditEntry {
-  const verdict = classify(write).verdict;
-  return detached({ ...write, id: randomUUID(), timestamp: new Date().toISOString(), event, verdict,
-    evidence: write.evidence?.length ? write.evidence : [{ source: "executor", detail: "Classification of normalized execution evidence; no destination observation is implied." }] });
+  requireAction(write);
+  const entry: AuditEntry = { ...write, id: randomUUID(), timestamp: new Date().toISOString(), event, verdict: classify(write).verdict,
+    evidence: write.evidence?.length ? write.evidence : [{ source: "executor", detail: summaries.executor }] };
+  return normalizedEntry(entry, []);
 }
 
-/** Validate and append; no existing entry is replaced or deleted. */
-export function record(entry: AuditEntry, store: AuditStore = getDefaultStore(), expectedLength?: number): void {
-  const copy = detached(entry);
+function appendEntry(entry: AuditEntry, store: AuditStore, expectedLength?: number, trustedRead = false): AuditEntry {
   const entries = readStore(store);
+  validateEvidence(entry.evidence);
+  const copy = normalizedEntry(entry, entries, trustedRead);
   validateEntry(copy, entries);
+  if (trustedRead) connectorEntries.add(copy);
   const result: unknown = store.append(copy, expectedLength ?? entries.length);
   if (result !== undefined) throw new ReceiptsError("invalid_store", "AuditStore.append must finish synchronously and return void.");
+  return copy;
 }
 
-function bindingFrom(entry: AuditEntry): Binding {
+/** Public evidence is always cooperative, regardless of caller-supplied trust flags. */
+export function record(entry: AuditEntry, store: AuditStore = getDefaultStore(), expectedLength?: number): void {
+  appendEntry(entry, store, expectedLength);
+}
+
+function receiptFrom(entry: AuditEntry): Receipt {
   return { destinationId: entry.destinationId!, packageDigest: entry.packageDigest, surface: entry.surface,
-    attemptId: entry.attemptId, observationId: entry.evidence.find((item) => item.source === "binding"
-      && item.destinationId === entry.destinationId && item.packageDigest === entry.packageDigest)!.reference!,
-    auditEntryId: entry.id, timestamp: entry.timestamp };
+    attemptId: entry.attemptId, actionId: entry.actionId ?? "legacy-unknown", destinationAccount: entry.destinationAccount ?? "legacy-unknown",
+    approvalId: entry.approvalId ?? "legacy-unknown",
+    observationId: entry.event === "binding" ? entry.evidence.find((item) => item.source === "binding"
+      && item.destinationId === entry.destinationId && item.packageDigest === entry.packageDigest)!.reference! : entry.id,
+    auditEntryId: entry.id, timestamp: entry.timestamp, evidenceSource: entry.evidenceSource ?? "host-supplied",
+    independentlyVerified: entry.evidenceSource === "receipts-read", observedAt: entry.observedAt ?? entry.timestamp,
+    verdict: entry.verdict, ...(entry.observedPackageDigest ? { observedPackageDigest: entry.observedPackageDigest } : {}) };
 }
 
-/** Bind existing, audited read-back evidence. This never invents an object ID. */
-export function bind(destinationId: string, packageDigest: string, store: AuditStore = getDefaultStore()): Binding {
+function unambiguous(entries: readonly AuditEntry[]): void {
+  if (new Set(entries.map((entry) => JSON.stringify([entry.surface, entry.destinationAccount, entry.actionId, entry.attemptId]))).size > 1) {
+    throw new ReceiptsError("ambiguous_destination", "The object and digest match multiple scopes. Supply destinationAccount and actionId.");
+  }
+}
+
+/** Historical immutable receipt. This performs no new provider read. */
+export function getReceipt(destinationId: string, packageDigest: string, store: AuditStore = getDefaultStore(), scope?: ReceiptScope): Receipt | undefined {
+  validateDigest(packageDigest);
+  const entries = readStore(store).filter((entry) => entry.destinationId === destinationId && entry.packageDigest === packageDigest && inScope(entry, scope));
+  unambiguous(entries);
+  const binding = entries.find((entry) => entry.event === "binding" && entry.verdict === "complete");
+  return binding ? receiptFrom(binding) : undefined;
+}
+
+/** Bind existing audited read-back; provenance comes only from that exact observation. */
+export function bind(destinationId: string, packageDigest: string, store: AuditStore = getDefaultStore(), scope?: ReceiptScope): Binding {
   validateDigest(packageDigest);
   const entries = readStore(store);
-  const observations = entries.filter((entry) => matchesObservation(entry, destinationId, packageDigest));
-  if (!observations.length) throw new ReceiptsError("observation_required", "No audited provider or human observation matches this object and exact approved digest.");
-  const surfaces = new Set(observations.map((entry) => entry.surface));
-  const attempts = new Set(observations.map((entry) => entry.attemptId));
-  if (surfaces.size !== 1 || attempts.size !== 1) {
-    throw new ReceiptsError("ambiguous_destination", "This ID and digest resolve to multiple surfaces or attempts. Use a canonical ID and reconcile the original attempt.");
-  }
+  const observations = entries.filter((entry) => matchesObservation(entry, destinationId, packageDigest) && inScope(entry, scope));
+  if (!observations.length) throw new ReceiptsError("observation_required", "No audited observation matches this object and exact approved digest.");
+  unambiguous(observations);
   const observation = observations.at(-1)!;
-  const priorBinding = [...entries].reverse().find((entry) => entry.event === "binding" && entry.destinationId === destinationId
-    && entry.packageDigest === packageDigest && entry.surface === observation.surface && entry.attemptId === observation.attemptId);
-  if (priorBinding) return bindingFrom(priorBinding);
+  const priorBinding = entries.find((entry) => entry.event === "binding" && entry.destinationId === destinationId
+    && entry.packageDigest === packageDigest && sameScope(entry, observation) && entry.attemptId === observation.attemptId);
+  if (priorBinding) return receiptFrom(priorBinding);
   const entry = createAuditEntry({
-    surface: observation.surface, attemptId: observation.attemptId, packageDigest, destinationId,
-    ...(observation.idempotencyKey ? { idempotencyKey: observation.idempotencyKey } : {}),
-    boundPackageDigest: packageDigest,
-    evidence: [{ source: "binding", detail: "Bound the approved digest to an already audited destination observation.",
-      destinationId, packageDigest, reference: observation.id, observedAt: observation.timestamp }],
+    surface: observation.surface, attemptId: observation.attemptId, actionId: observation.actionId,
+    destinationAccount: observation.destinationAccount, approvalId: observation.approvalId, packageDigest, destinationId,
+    ...(observation.idempotencyKey ? { idempotencyKey: observation.idempotencyKey } : {}), boundPackageDigest: packageDigest,
+    evidence: [{ source: "binding", detail: summaries.binding, destinationId, packageDigest,
+      reference: observation.id, observedAt: observation.observedAt ?? observation.timestamp }],
   }, "binding");
-  record(entry, store, entries.length);
-  return bindingFrom(entry);
+  return receiptFrom(appendEntry(entry, store, entries.length));
 }
 
-/** Only audited bindings can return complete. A status flag cannot. */
-export function verify(destinationId: string, packageDigest: string, store: AuditStore = getDefaultStore()): Verdict {
+/** Historical verification; use observeDestination(recheck:true) to inspect current state. */
+export function verify(destinationId: string, packageDigest: string, store: AuditStore = getDefaultStore(), scope?: ReceiptScope): Verdict {
   validateDigest(packageDigest);
   if (typeof destinationId !== "string" || !destinationId.trim()) throw new ReceiptsError("invalid_destination_id", "A destination ID is required.");
-  const entries = readStore(store);
+  const entries = readStore(store).filter((entry) => inScope(entry, scope));
   const matching = entries.filter((entry) => entry.destinationId === destinationId && entry.packageDigest === packageDigest);
-  if (new Set(matching.map((entry) => entry.surface)).size > 1
-    || new Set(matching.map((entry) => entry.attemptId)).size > 1) {
-    throw new ReceiptsError("ambiguous_destination", "This ID and digest are ambiguous across surfaces or attempts.");
-  }
+  unambiguous(matching);
   if (matching.some((entry) => entry.event === "binding" && entry.verdict === "complete")) return "complete";
   if (matching.some((entry) => entry.verdict === "delivery_unknown")) return "delivery_unknown";
   if (entries.some((entry) => entry.destinationId === destinationId)) return "package_unverified";
   if (entries.some((entry) => entry.packageDigest === packageDigest && entry.verdict === "delivery_unknown")) return "delivery_unknown";
   return "prewrite";
+}
+
+/** Execute trusted local connector code; wire data alone cannot create this provenance. */
+export async function observeDestination(connector: DestinationConnector, request: ConnectorRequest, store: AuditStore = getDefaultStore()): Promise<Receipt> {
+  requireAction(request);
+  if (!connector || typeof connector.read !== "function" || connector.surface !== request.surface) {
+    throw new ReceiptsError("invalid_connector", "A locally configured connector for the exact surface is required.");
+  }
+  const snapshot = detached(request);
+  const history = readStore(store);
+  const attempt = history.find((entry) => entry.attemptId === snapshot.attemptId);
+  if (attempt && (!sameScope(attempt, snapshot) || attempt.packageDigest !== snapshot.packageDigest || attempt.approvalId !== snapshot.approvalId)) {
+    throw new ReceiptsError("invalid_entry", "A connector read cannot change the approved action identity.");
+  }
+  const originalBinding = history.find((entry) => entry.event === "binding" && sameScope(entry, snapshot)
+    && entry.attemptId === snapshot.attemptId && entry.packageDigest === snapshot.packageDigest
+    && (snapshot.destinationId === undefined || entry.destinationId === snapshot.destinationId));
+  if (snapshot.recheck && !originalBinding) {
+    throw new ReceiptsError("observation_required", "Rechecking requires an existing receipt for the exact action.");
+  }
+  let observed;
+  try { observed = await connector.read(Object.freeze(detached(snapshot))); }
+  catch (error) {
+    if (error instanceof ReceiptsError && error.code === "account_mismatch") {
+      throw new ReceiptsError("account_mismatch", "The connector refused a different destination account.");
+    }
+    if (error instanceof ReceiptsError && error.code === "object_mismatch") {
+      throw new ReceiptsError("object_mismatch", "The connector refused a different destination object.");
+    }
+    throw new ReceiptsError("connector_read_failed", "The destination read failed. No verification was issued; do not repeat the write.");
+  }
+  if (!observed || observed.destinationAccount !== snapshot.destinationAccount) {
+    throw new ReceiptsError("account_mismatch", "The connector read a different destination account.");
+  }
+  if (snapshot.destinationId !== undefined && observed.destinationId !== snapshot.destinationId) {
+    throw new ReceiptsError("object_mismatch", "The connector read a different destination object.");
+  }
+  validateDigest(observed.packageDigest);
+  if (typeof observed.observedAt !== "string" || !Number.isFinite(Date.parse(observed.observedAt))) {
+    throw new ReceiptsError("invalid_observation", "The connector must return a valid observation timestamp.");
+  }
+  const observation = createAuditEntry({ surface: snapshot.surface, attemptId: snapshot.attemptId,
+    actionId: snapshot.actionId, destinationAccount: snapshot.destinationAccount, approvalId: snapshot.approvalId,
+    packageDigest: snapshot.packageDigest, destinationId: observed.destinationId, publicObjectExists: true,
+    ...(snapshot.recheck && observed.packageDigest === snapshot.packageDigest ? { boundPackageDigest: snapshot.packageDigest } : {}),
+    evidence: [{ source: "provider", detail: summaries.provider, destinationId: observed.destinationId,
+      packageDigest: observed.packageDigest, observedAt: observed.observedAt }],
+  }, snapshot.recheck ? "recheck" : "observation");
+  observation.observedAt = observed.observedAt;
+  observation.observedPackageDigest = observed.packageDigest;
+  const stored = appendEntry(observation, store, undefined, true);
+  if (observed.packageDigest !== snapshot.packageDigest) return receiptFrom(stored);
+  if (snapshot.recheck) return receiptFrom(stored);
+  const binding = createAuditEntry({ surface: stored.surface, attemptId: stored.attemptId,
+    actionId: stored.actionId, destinationAccount: stored.destinationAccount, approvalId: stored.approvalId,
+    packageDigest: stored.packageDigest, destinationId: stored.destinationId, boundPackageDigest: stored.packageDigest,
+    evidence: [{ source: "binding", detail: summaries.binding, destinationId: stored.destinationId,
+      packageDigest: stored.packageDigest, reference: stored.id, observedAt: stored.observedAt }],
+  }, "binding");
+  return receiptFrom(appendEntry(binding, store));
 }
 
 export function assertComplete(result: Classification | Verdict): void;
@@ -206,7 +381,8 @@ export class MemoryAuditStore implements AuditStore {
     if (expectedLength !== undefined && expectedLength !== this.#entries.length) {
       throw new ReceiptsError("audit_conflict", "The audit changed before append. No entry was written.");
     }
-    const copy = detached(entry);
+    validateEvidence(entry.evidence);
+    const copy = normalizedEntry(entry, this.#entries, connectorEntries.has(entry));
     validateEntry(copy, this.#entries);
     this.#entries.push(copy);
   }
@@ -288,7 +464,8 @@ export class JsonlAuditStore implements AuditStore {
       if (expectedLength !== undefined && expectedLength !== envelopes.length) {
         throw new ReceiptsError("audit_conflict", "The audit changed before append. No entry was written.");
       }
-      const copy = detached(entry);
+      validateEvidence(entry.evidence);
+      const copy = normalizedEntry(entry, envelopes.map((value) => value.entry), connectorEntries.has(entry));
       validateEntry(copy, envelopes.map((value) => value.entry));
       const payload: Omit<Envelope, "hash"> = { version: 1, sequence: envelopes.length + 1,
         previousHash: envelopes.at(-1)?.hash ?? null, entry: copy };

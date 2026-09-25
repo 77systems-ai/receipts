@@ -11,7 +11,8 @@ import {
 
 const approved = digestPackage("approved content");
 const different = digestPackage("different content");
-const base: OutwardWrite = { surface: "social-publish", attemptId: "attempt-1", packageDigest: approved };
+const base: OutwardWrite = { surface: "social-publish", attemptId: "attempt-1", packageDigest: approved,
+  actionId: "123e4567-e89b-42d3-a456-426614174000", destinationAccount: "social:account-1", approvalId: "approval-1" };
 
 function errorCode(code: string) {
   return (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === code;

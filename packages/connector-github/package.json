@@ -1,0 +1,43 @@
+{
+  "name": "@77systems/receipts-github",
+  "version": "0.2.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Local, independently verified GitHub issue receipts.",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@77systems/receipts-core": "0.2.0",
+    "@77systems/receipts-sdk": "0.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/77systems-ai/receipts.git",
+    "directory": "packages/connector-github"
+  },
+  "devDependencies": {
+    "@77systems/receipts-conformance": "0.2.0"
+  }
+}
