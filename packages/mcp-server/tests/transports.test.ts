@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,9 +111,13 @@ test('CLI documents supported transports and rejects remote binding and invalid 
   }
 });
 
-test('doctor boots MCP and checks credential presence without exposing values', { timeout: 20000 }, () => {
-  // Exercise the installed npm bin symlink, not only the underlying script.
-  const doctor = fileURLToPath(new URL('../../../node_modules/.bin/receipts', import.meta.url));
+test('doctor boots through an executable link and checks credentials without exposing values', { timeout: 20000 }, async t => {
+  // npm ci runs before dist exists in a fresh source checkout, so it need not
+  // create workspace bin links. Reproduce the installed package's link explicitly.
+  const directory = await mkdtemp(join(tmpdir(), 'receipts-doctor-bin-'));
+  t.after(() => rm(directory, {recursive:true,force:true}));
+  const doctor = join(directory,'receipts');
+  await symlink(fileURLToPath(new URL('../dist/doctor.js', import.meta.url)),doctor);
   const secret = 'sensitive-doctor-test-token';
   const run = spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: { ...process.env,GITHUB_TOKEN:secret,RECEIPTS_GITHUB_REPO:'fixture/test' }, timeout:15000 });
   assert.equal(run.status,0,run.stderr);
