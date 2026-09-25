@@ -58,7 +58,7 @@ test("uncertain execution cannot claim completion, cannot retry, and resolves on
   assert.equal(client.claimComplete(complete), "post-1");
   assert.equal(writes, 1);
   assert.equal(reads, 1);
-  assert.deepEqual(store.read().map((entry) => entry.event), ["attempt", "classification", "observation", "binding", "classification"]);
+  assert.deepEqual(store.read().map((entry) => entry.event), ["claim", "attempt", "classification", "duplicate", "duplicate", "duplicate", "observation", "binding", "classification", "claim_completed"]);
 });
 
 test("executor success flags and invented receipt fields are ignored without read-back", async () => {
@@ -110,7 +110,7 @@ test("audit claim failure prevents execution and audit result failure cannot cla
     execute() { writes += 1; store.failAppend = true; },
   }), /Audit unavailable/);
   assert.equal(writes, 1);
-  assert.equal(store.entries[0]!.verdict, "delivery_unknown");
+  assert.equal(store.entries.find(entry=>entry.event === "attempt")!.verdict, "delivery_unknown");
 });
 
 test("contradictory or missing observed digest preserves placement without leaving bindable evidence", async () => {
@@ -315,4 +315,54 @@ test("cooperative rechecks append current observations while preserving the orig
   assert.equal(client.claimComplete(original), "post-1");
   assert.deepEqual(store.read().slice(0, prefix.length), prefix);
   assert.equal(getReceipt("post-1", digestPayload(payload), store, { actionId: action.actionId })?.observedAt, original.observedAt);
+});
+
+test('policy denies before dispatch, names its rule, and leaves a recoverable unused action', async () => {
+  const {MemoryAuditStore}=await import('@77systems/receipts-core');
+  const {PolicyDeniedError}=await import('../src/index.js');
+  const store=new MemoryAuditStore();let writes=0;
+  const name=surface();const account='provider:blocked';
+  const options={...identity(account),surface:name,attemptId:'blocked',payload:{private:'do-not-log'},execute(){writes++;}};
+  const client=createReceipts({store,policy:{rules:[{id:'block-account',effect:'block',destinationAccount:account}]}});
+  await assert.rejects(client.execute(options),(error:unknown)=>error instanceof PolicyDeniedError&&error.verdict==='policy_denied'&&error.ruleId==='block-account');
+  assert.equal(writes,0);assert.equal(store.read().filter(entry=>entry.event==='attempt').length,0);
+  assert.equal(store.read().find(entry=>entry.event==='policy_denied')?.admission?.ruleId,'block-account');
+  // A deliberate policy correction can authorize the same never-dispatched approval.
+  await createReceipts({store}).execute({...options,attemptId:'after-policy-correction'});
+  assert.equal(writes,1);
+});
+
+test('policy budgets are shared across SDK clients; duplicate decisions are audited', async () => {
+  const {MemoryAuditStore}=await import('@77systems/receipts-core');
+  const {PolicyDeniedError}=await import('../src/index.js');
+  const store=new MemoryAuditStore();let writes=0;const name=surface();
+  const policy={rateLimits:[{id:'one-per-hour',surface:name,maxWrites:1,windowMs:3600000}]};
+  const first={...identity(),surface:name,attemptId:'first-budget',payload:{text:'approved'},execute(){writes++;}};
+  await createReceipts({store,policy}).execute(first);
+  await assert.rejects(createReceipts({store,policy}).execute({...first,...identity(),attemptId:'second-budget'}),PolicyDeniedError);
+  await assert.rejects(createReceipts({store,policy}).execute({...first,attemptId:'duplicate-budget'}),(error:unknown)=>error instanceof DuplicateWriteError&&error.verdict==='DUPLICATE'&&Boolean(error.decision?.auditEntryId));
+  assert.equal(writes,1);assert.equal(store.read().filter(entry=>entry.event==='duplicate').length,1);
+});
+
+test('registry completion survives SDK restart after destination read-back', async () => {
+  const {MemoryAuditStore}=await import('@77systems/receipts-core');
+  const store=new MemoryAuditStore();const name=surface();const payload={text:'approved'};
+  const options={...identity(),surface:name,attemptId:'restart',payload,execute(){throw new Error('lost');}};
+  await createReceipts({store}).execute(options);
+  const connector={surface:name,read:()=>({destinationAccount:options.destinationAccount,destinationId:'post-1',packageDigest:digestPayload(payload),observedAt:new Date().toISOString()})};
+  const result=await createReceipts({store,connector}).reconcile({surface:name,attemptId:'restart',payload});
+  assert.equal(result.classification.verdict,'complete');
+  assert.equal(store.read().find(entry=>entry.event==='claim_completed')?.admission?.verdict,'COMPLETED');
+  await assert.rejects(createReceipts({store}).execute({...options,attemptId:'after-complete'}),DuplicateWriteError);
+  assert.ok(store.read().every(entry=>!('token' in (entry.registry??{}))));
+});
+
+test('lease expiry during denied-reservation cleanup retains the named policy outcome',async()=>{
+ const {MemoryAuditStore,ReceiptsError}=await import('@77systems/receipts-core');
+ const {PolicyDeniedError}=await import('../src/index.js');
+ const client=createReceipts({store:new MemoryAuditStore(),policy:{defaultEffect:'block'}});
+ client.registry.release=()=>{throw new ReceiptsError('claim_expired','Reservation expired during cleanup.');};
+ let writes=0;
+ await assert.rejects(client.execute({...identity(),surface:surface(),attemptId:'denial-cleanup',payload:{approved:true},execute(){writes++;}}),error=>error instanceof PolicyDeniedError&&error.ruleId==='default-policy');
+ assert.equal(writes,0);
 });

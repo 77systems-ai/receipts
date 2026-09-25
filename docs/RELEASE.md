@@ -1,8 +1,8 @@
-# v0.2 release checklist
+# v0.3 release checklist
 
 Source repository: https://github.com/77systems-ai/receipts
 
-This source milestone adds trusted GitHub read-back, action-scoped duplicate protection, immutable rechecks, setup diagnostics, and connector conformance. Publishing npm packages and submitting registries are separate actions. v0.2 does not alter any in-progress v0.1 publishing workflow or claim a marketplace listing.
+This milestone builds on merged v0.2 with atomic fenced claims, policy/rate admission, offline signed proofs/badges, scored conformance receipts and optional OTel. Publishing npm packages and submitting registries are separate actions. v0.3 does not alter an existing publishing workflow or claim a marketplace listing.
 
 ## Validation
 
@@ -21,6 +21,8 @@ npm publish -w @77systems/receipts-core --access public
 npm publish -w @77systems/receipts-sdk --access public
 npm publish -w @77systems/receipts-github --access public
 npm publish -w @77systems/receipts-conformance --access public
+npm publish -w @77systems/receipts-proof --access public
+npm publish -w @77systems/receipts-otel --access public
 npm publish -w @77systems/receipts-mcp --access public
 npm publish -w @77systems/receipts-rest --access public
 npm publish -w @77systems/receipts-claude-plugin --access public
@@ -29,7 +31,7 @@ npm publish -w @77systems/receipts-claude-plugin --access public
 From a clean directory, verify the published MCP package starts and lists six tools. The explicit setup-check invocation is:
 
 ```sh
-npx -y --package=@77systems/receipts-mcp@0.2.0 receipts doctor
+npx -y --package=@77systems/receipts-mcp@0.3.0 receipts doctor
 ```
 
 Source tests and pack dry-runs are not evidence of npm publication. Do not tag a release to trigger an external publishing workflow until publication has been authorized and configured. Registry and marketplace submissions are outside this milestone.
@@ -39,3 +41,14 @@ Source tests and pack dry-runs are not evidence of npm publication. Do not tag a
 Existing logs remain readable and show cooperative provenance. New writes require a caller UUID actionId, exact destinationAccount, and approvalId. Preserve IDs across uncertain retries. Existing `record`/`bind` integrations remain supported after adding these identities; they do not acquire independent provenance automatically.
 
 The first historical receipt remains unchanged after later observations. Applications should use the explicit recheck response to evaluate current state. Evidence source and completion are distinct: a trusted read can independently confirm that content no longer matches.
+
+
+## v0.3 acceptance
+
+Core tests include separate-process JSONL contention for claims and rate limits, stale-owner fencing, expired unused reservations, dispatched uncertainty that cannot expire into another write, protected lifecycle state, policy rules, and legacy history. SDK tests prove denied callbacks never execute and successful read-back completes registry state after restart.
+
+Signed-proof tests cover receipt/chain/head/key/time/signature tampering, offline verification, independent-only badges, unsafe link rejection and private-key exclusion. OTel tests inspect real in-memory exported spans and assert no payload/identity/error leakage or business-outcome changes when instrumentation fails.
+
+The checked-in GitHub evaluation is generated from the actual connector with controlled provider responses. Publish that complete versioned evaluation before making a Receipts Certified claim. For a stable reference, use a commit-pinned artifact URL. Publishing the source branch/PR makes the evaluation publicly inspectable; npm availability and certification by an independent authority are separate claims.
+
+No version tag or npm publication is performed automatically by this implementation. Badge/signature exports and telemetry exporters are opt-in. The original OS, execution sandboxing, payment rails, predictive recovery, hosted services and new destination surfaces remain outside the change.

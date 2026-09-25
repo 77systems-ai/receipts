@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-conformance",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "license": "MIT",
   "description": "Public connector conformance tests for Receipts.",
@@ -26,8 +26,8 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@77systems/receipts-core": "0.2.0",
-    "@77systems/receipts-sdk": "0.2.0"
+    "@77systems/receipts-core": "0.3.0",
+    "@77systems/receipts-sdk": "0.3.0"
   },
   "publishConfig": {
     "access": "public"

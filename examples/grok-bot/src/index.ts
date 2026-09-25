@@ -76,7 +76,7 @@ assert.equal(reconciled.evidenceSource, "host-supplied");
 assert.equal(reconciled.independentlyVerified, false);
 assert.ok(reconciled.observedAt);
 assert.equal(writes, 1);
-assert.deepEqual(store.read().map((entry) => entry.event), ["attempt", "classification", "observation", "binding", "classification"]);
+assert.deepEqual(store.read().map((entry) => entry.event), ["claim", "attempt", "classification", "duplicate", "observation", "binding", "classification", "claim_completed"]);
 console.log("3. Cooperative fixture read-back bound the approved payload; evidenceSource: host-supplied, independentlyVerified: false.");
 console.log(`4. Bot may now say: Posted in the offline fixture. Receipt: ${destinationId}. Observed at ${reconciled.observedAt}. No duplicate was created.`);
 console.log(`Append-only audit: ${auditPath}`);

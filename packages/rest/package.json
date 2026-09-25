@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-rest",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Receipts destination verification through a local REST API.",
   "type": "module",
   "license": "MIT",
@@ -38,10 +38,10 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@77systems/receipts-core": "0.2.0",
+    "@77systems/receipts-core": "0.3.0",
     "@hono/node-server": "^2.1.1",
     "hono": "^4.13.9",
-    "@77systems/receipts-github": "0.2.0"
+    "@77systems/receipts-github": "0.3.0"
   },
   "homepage": "https://github.com/77systems-ai/receipts#readme",
   "bugs": {

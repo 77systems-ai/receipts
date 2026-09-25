@@ -2,8 +2,8 @@
 
 Read README.md and docs/ARCHITECTURE.md before changing the proof model.
 
-- The public v0.2 is a Node 20+ TypeScript ESM npm monorepo: no UI, billing, accounts, hosted infrastructure, or authentication product.
-- Core has zero runtime dependencies. Classification performs no I/O. Unknown surfaces are rejected with not_a_destination_write, never guessed; there are exactly four verdicts.
+- The public v0.3 is a Node 20+ TypeScript ESM npm monorepo: no UI, billing, accounts, hosted infrastructure, or authentication product.
+- Core has zero runtime dependencies. Classification performs no I/O. Unknown surfaces are rejected with not_a_destination_write, never guessed; there are four destination verdicts; admission decisions such as DUPLICATE and policy_denied are separate.
 - Status flags never prove completion. Destination identifiers must be observed, validated per surface, and bound to the approved content digest.
 - Audits are append-only and hash chained. Preserve source provenance and executor attribution, but hash freeform evidence; never store payloads, tokens, or raw provider errors. Never invent a destination ID or claim that a hash chain authenticates the source of evidence.
 - All permissions default false. Uncertain writes and unbound objects never permit automatic retries or second writes. Rearm only a known prewrite after a fixed cause, new digest, and new attempt.
@@ -16,3 +16,8 @@ Read README.md and docs/ARCHITECTURE.md before changing the proof model.
 - Duplicate prevention keys on exact account plus approved action UUID, not content hash. Preserve original action IDs on uncertain outcomes. New actions require distinct approvals.
 - Historical receipts and observedAt are immutable. Rechecks append current observations, including edited-content mismatches.
 - Every connector must run the public conformance suite and provider-specific identity checks. Live examples require explicit test configuration and must never repeat uncertain writes.
+
+- Only unused claim reservations expire. TTL and release must never authorize a second write after dispatch; fence stale owners. Policy admission and rate-budget consumption must be atomic with the durable attempt.
+- Signed proofs require a separately trusted Ed25519 public key and an intact audit snapshot; badges express historical local-signer attestations. Keep private keys local, and export proof metadata only on explicit request.
+- Conformance evaluations include benchmark/connector versions, seeded provenance, complete case results and measured denominators. Publish evaluations before claiming certification; do not turn fixture rates into production guarantees.
+- Telemetry is opt-in, never installs a network exporter, and permits only fixed verdict/source fields and valid digests. Never export payloads, identities, freeform errors or stack traces.

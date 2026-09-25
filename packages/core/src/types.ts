@@ -66,7 +66,23 @@ export interface SurfaceDef {
   observe?: (write: OutwardWrite) => DestinationObservation | Promise<DestinationObservation>;
 }
 
-export type AuditEvent = "attempt" | "classification" | "observation" | "binding" | "recheck";
+export type AuditEvent = "attempt" | "classification" | "observation" | "binding" | "recheck"
+  | "claim" | "claim_expired" | "claim_released" | "claim_completed" | "policy_denied" | "duplicate";
+
+export type AdmissionVerdict = "CLAIMED" | "AUTHORIZED" | "DUPLICATE" | "policy_denied" | "RELEASED" | "COMPLETED" | "EXPIRED";
+
+export interface RegistryAudit {
+  leaseId: string;
+  tokenHash: string;
+  fence: number;
+  expiresAt: string;
+}
+
+export interface AdmissionAudit {
+  verdict: AdmissionVerdict;
+  ruleId?: string;
+  reason?: "active_claim" | "completed" | "dispatched" | "approval_reused";
+}
 
 export interface AuditEntry extends OutwardWrite {
   id: string;
@@ -78,6 +94,69 @@ export interface AuditEntry extends OutwardWrite {
   independentlyVerified?: boolean;
   observedAt?: string;
   observedPackageDigest?: string;
+  registry?: RegistryAudit;
+  admission?: AdmissionAudit;
+}
+
+export interface AuditEnvelope {
+  version: 1;
+  sequence: number;
+  previousHash: string | null;
+  entry: AuditEntry;
+  hash: string;
+}
+
+export interface AuditChain {
+  envelopes: AuditEnvelope[];
+  head: { count: number; hash: string | null };
+}
+
+export interface ApprovedAction {
+  surface: string;
+  attemptId: string;
+  actionId: string;
+  destinationAccount: string;
+  approvalId: string;
+  packageDigest: string;
+  idempotencyKey?: string;
+}
+
+export interface ClaimLease extends ApprovedAction {
+  leaseId: string;
+  token: string;
+  fence: number;
+  expiresAt: string;
+}
+
+export interface AdmissionDecision {
+  verdict: AdmissionVerdict;
+  auditEntryId: string;
+  ruleId?: string;
+  reason?: AdmissionAudit["reason"];
+}
+
+export type ClaimDecision = (AdmissionDecision & { verdict: "CLAIMED"; claim: ClaimLease })
+  | (AdmissionDecision & { verdict: "DUPLICATE" });
+
+export interface PolicyRule {
+  id: string;
+  effect: "allow" | "block";
+  surface?: string;
+  destinationAccount?: string;
+}
+
+export interface RateLimitRule {
+  id: string;
+  maxWrites: number;
+  windowMs: number;
+  surface?: string;
+  destinationAccount?: string;
+}
+
+export interface WritePolicy {
+  defaultEffect?: "allow" | "block";
+  rules?: readonly PolicyRule[];
+  rateLimits?: readonly RateLimitRule[];
 }
 
 /**

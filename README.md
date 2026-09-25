@@ -4,7 +4,7 @@
 
 An agent says DONE. Receipts asks for an observed destination object bound to the exact approved package. When delivery is uncertain, its executor wrapper refuses another write and supports reading back the existing object.
 
-v0.2 adds independent GitHub issue verification, action-scoped duplicate protection, immutable observation history, `receipts doctor`, and a public connector conformance suite. This repository contains the source release; npm publication is a separate release step.
+v0.3 adds atomic expiring reservations, write policies and rate limits, opt-in Ed25519 signed proofs and offline badges, scored conformance evaluations, and OpenTelemetry integration. v0.2's independent GitHub verification and permanent cooperative evidence path remain intact. This is the source release; npm publication is a separate release step.
 
 ## Run from source
 
@@ -30,6 +30,36 @@ The offline Grok reference demo simulates a lost response and recovery. Its evid
 The cooperative path remains supported for chat integrations and human observations. Caller-supplied trust flags cannot upgrade it. Both paths can bind observations to approved package digests; applications can additionally require independent verification.
 
 `complete` describes a matching observed object and package binding. It is not a claim that the destination can never change. Every receipt carries the exact account, object ID, action ID, package digest, proof source, independence flag, and original observation time.
+
+## Write admission: claims and policies
+
+The SDK reserves an approved action, checks policy, and atomically records dispatch before invoking the provider. Concurrent callers share the durable registry: one wins; the other gets an audited `DUPLICATE` decision. `DuplicateWriteError` remains compatible and now carries that decision.
+
+Unused reservations expire after a configurable TTL and can be released. Once dispatch has been recorded, neither expiry nor release permits another write: an uncertain outcome must be reconciled. Completion requires an existing exact destination binding. Stale lease owners are fenced off after reclaim.
+
+```ts
+const receipts = createReceipts({
+  store,
+  connector,
+  claimTtlMs: 60_000,
+  policy: {
+    rules: [{id:'blocked-repository',effect:'block',destinationAccount:'github:owner/restricted'}],
+    rateLimits: [{id:'issues-per-hour',surface:'github-issue',maxWrites:10,windowMs:3_600_000}],
+  },
+});
+```
+
+The default policy permits registered surfaces. Explicit block rules win; an optional `defaultEffect: 'block'` enables allow-list behavior. A blocked write throws `PolicyDeniedError` with `verdict: 'policy_denied'`, its `ruleId`, and an audit reference. Policy denial makes no provider write and releases the unused SDK reservation. Budgets count durable dispatch attempts, including uncertain ones, across clients sharing the store.
+
+Admission outcomes explain whether execution may start. They are separate from the four destination-verification verdicts below. Direct registry APIs and detailed lease rules are in [core](packages/core/README.md). All writers must use the guarded boundary; this is not an execution sandbox.
+
+## Offline signed proofs and measured conformance
+
+The opt-in [proof package](packages/proof/README.md) signs the exact receipt hash and audit snapshot head using a local Ed25519 key. An offline verifier checks both the signature and chain against a separately trusted public key. It can render **Verified by Receipts · independently verified · receipt #abc123** for valid, independently complete receipts. No tracking or verification service is involved. Exported snapshots include audit metadata, so review them before publishing.
+
+Every [conformance v2](packages/conformance/README.md) run emits a benchmark/version, connector version, seeded environment provenance, per-case outcomes, and counted error rates. The public [GitHub 0.3.0 evaluation](docs/evaluations/github-0.3.0.json) contains seven passing cases: 0/6 false completions, 0/4 false blocks, and 0/3 unsafe dispatches. These are fixed-fixture measurements, not production reliability estimates. A “Receipts Certified” claim requires a published matching evaluation; the library evaluates eligibility without pretending to verify a remote publication.
+
+The optional [OpenTelemetry package](packages/otel/README.md) emits verification/receipt spans with verdict, evidence source and digests. It exports no payloads, identities, credentials or error text, and installs no network exporter.
 
 ## First independent integration: GitHub issues
 
@@ -138,10 +168,12 @@ Every persisted entry is hash chained. A retained head checkpoint detects local 
 - `receipts-core`: dependency-free classification, registry, audit, bindings and connector contract.
 - `receipts-sdk`: canonical payload hashing and durable executor guard.
 - `receipts-github`: independent GitHub issues reader.
-- `receipts-conformance`: reusable failure-case suite for connectors.
+- `receipts-conformance`: scored failure-case suite and versioned evaluation receipts.
+- `receipts-proof`: local signatures, offline chain verification and static badges.
+- `receipts-otel`: explicit OpenTelemetry instrumentation with digest-only attributes.
 - `receipts-mcp`, `receipts-rest`, `receipts-claude-plugin`: integration surfaces.
 
-All packages use the `@77systems/` npm scope. v0.1 logs remain readable with cooperative provenance. New durable actions require `actionId` (UUID), `destinationAccount`, and `approvalId`; existing integrations must add those identities before writing v0.2 entries. Legacy generic surface registrations remain available; GitHub issues is the only added provider integration.
+All packages use the `@77systems/` npm scope. v0.1 logs remain readable with cooperative provenance, and v0.2 claims remain reconcilable without inventing leases. New durable actions require `actionId` (UUID), `destinationAccount`, and `approvalId`; existing integrations must add those identities before writing v0.2 entries. Legacy generic surface registrations remain available; GitHub issues is the only added provider integration.
 
 The entire local mechanism is MIT licensed. No signup, hosted infrastructure, UI, billing, or marketplace submission is included.
 

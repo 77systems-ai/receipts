@@ -1,9 +1,9 @@
-# Receipts v0.2 handoff
+# Receipts v0.3 handoff
 
-Approved scope is implemented in the source workspace: action identity, cooperative/trusted provenance separation, a real GitHub issues reader, append-only rechecks, setup diagnostics, and public connector conformance.
+v0.2 was merged before this work. The v0.3 source implements all five approved items: atomic fenced claim lifecycle, named policy/rate denials, local Ed25519 signed receipts and offline badges, scored conformance evaluation receipts, and optional OpenTelemetry wrappers.
 
-Start with the root README and `npm ci && npm test`. No UI or hosted service exists. The original 77 Bark Ave OS was not modified. Every real API test uses synthetic data in a dedicated test repository.
+Start with README.md and `npm ci && npm test`. New admission outcomes are separate from the four destination verdicts. TTL only frees unused reservations; a dispatched uncertain action never becomes retryable. The SDK keeps DuplicateWriteError compatibility and adds persisted admission details plus PolicyDeniedError. Core remains dependency-free.
 
-Local acceptance proof is exported by `npm run demo:github -- --live`; `.receipts/` is intentionally ignored. The initial interrupted fixture was recovered from its existing audit without another POST; a fresh scenario also passed. Both fixture issues were closed. Keep the proof and audit local unless their owner chooses to share them.
+The real GitHub example remains explicitly gated with --live and uses synthetic issues. Audits and signed proof previews stay under ignored .receipts/. The public docs/evaluations/github-0.3.0.json is a self-attested fixed-fixture benchmark, with explicit counts and denominators. It includes no audit, payloads, credentials or machine paths.
 
-Before npm release, complete docs/RELEASE.md. No npm publication, version tag, registry listing, marketplace submission, or patent status is established by this source change.
+Before npm release follow docs/RELEASE.md. No npm publication, version tag, registry or marketplace submission is established by this source work. The original OS was not modified.

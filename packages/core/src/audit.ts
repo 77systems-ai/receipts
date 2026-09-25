@@ -9,6 +9,7 @@ import {
   ReceiptsError, type AuditEntry, type AuditEvent, type AuditStore, type Binding,
   type Classification, type OutwardWrite, type Verdict, type Receipt, type ReceiptScope,
   type ConnectorRequest, type DestinationConnector,
+  type AuditEnvelope, type AuditChain,
 } from "./types.js";
 
 /** Stable JSON serialization for hashing; unsupported values fail closed. */
@@ -39,6 +40,8 @@ function invalid(message: string): never {
 
 // This capability is intentionally object identity, never a serializable flag.
 const connectorEntries = new WeakSet<object>();
+const admissionEntries = new WeakSet<object>();
+const admissionEvents = new Set<AuditEvent>(["claim", "claim_expired", "claim_released", "claim_completed", "policy_denied", "duplicate"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const summaries = {
   provider: "Destination evidence supplied by the host.",
@@ -77,8 +80,11 @@ function matchesObservation(entry: AuditEntry, destinationId: string, digest: st
 }
 
 /** Strict storage allowlist: descriptions and external references are digested, never persisted. */
-function normalizedEntry(input: AuditEntry, previous: readonly AuditEntry[], trustedRead = false): AuditEntry {
+function normalizedEntry(input: AuditEntry, previous: readonly AuditEntry[], trustedRead = false, trustedAdmission = false): AuditEntry {
   requireAction(input);
+  if ((input.registry || input.admission || admissionEvents.has(input.event)) && !trustedAdmission) {
+    throw new ReceiptsError("protected_admission", "Claim and policy state can only be changed through the idempotency registry.");
+  }
   if (typeof input.id !== "string" || !uuidPattern.test(input.id)) {
     invalid("New audit entry IDs must be UUIDs.");
   }
@@ -103,6 +109,11 @@ function normalizedEntry(input: AuditEntry, previous: readonly AuditEntry[], tru
     if (input[key] !== undefined) Object.assign(entry, { [key]: input[key] });
   }
   if (input.rearm) entry.rearm = { causeFixed: input.rearm.causeFixed, previousDigest: input.rearm.previousDigest, previousAttemptId: input.rearm.previousAttemptId };
+  if (input.registry) entry.registry = { leaseId: input.registry.leaseId, tokenHash: input.registry.tokenHash,
+    fence: input.registry.fence, expiresAt: timestamp(input.registry.expiresAt) };
+  if (input.admission) entry.admission = { verdict: input.admission.verdict,
+    ...(input.admission.ruleId !== undefined ? { ruleId: input.admission.ruleId } : {}),
+    ...(input.admission.reason !== undefined ? { reason: input.admission.reason } : {}) };
   const observedEvidence = input.evidence.find((item) => (item.source === "provider" || item.source === "human")
     && item.destinationId === input.destinationId);
   if (input.event === "observation" || input.event === "recheck" || observedEvidence) {
@@ -126,11 +137,56 @@ function normalizedEntry(input: AuditEntry, previous: readonly AuditEntry[], tru
   return detached(entry);
 }
 
+function validateAdmissionEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void {
+  if (!entry.admission && !entry.registry && !admissionEvents.has(entry.event)) return;
+  const verdicts: Partial<Record<AuditEvent, string>> = { claim: "CLAIMED", attempt: "AUTHORIZED", claim_expired: "EXPIRED",
+    claim_released: "RELEASED", claim_completed: "COMPLETED", policy_denied: "policy_denied", duplicate: "DUPLICATE" };
+  if (!entry.admission || verdicts[entry.event] !== entry.admission.verdict) invalid("Admission verdict contradicts its event.");
+  if (entry.admission.ruleId !== undefined && (typeof entry.admission.ruleId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(entry.admission.ruleId))) invalid("Policy rule IDs must be opaque identifiers.");
+  if (entry.admission.reason !== undefined && !["active_claim", "completed", "dispatched", "approval_reused"].includes(entry.admission.reason)) invalid("Unknown admission reason.");
+  if (entry.event === "policy_denied" && !entry.admission.ruleId) invalid("A policy denial must name its rule.");
+  if (entry.event === "duplicate") {
+    if (entry.registry || !entry.admission.reason || entry.verdict !== "prewrite") invalid("Duplicate decisions cannot alter a lease.");
+    return;
+  }
+  const lease = entry.registry;
+  if (!lease || !uuidPattern.test(lease.leaseId) || !Number.isSafeInteger(lease.fence) || lease.fence < 1
+    || !Number.isFinite(Date.parse(lease.expiresAt))) invalid("Registry entries require valid fenced lease metadata.");
+  validateDigest(lease.tokenHash);
+  const action = previous.filter((item) => item.destinationAccount === entry.destinationAccount
+    && item.actionId?.toLowerCase() === entry.actionId?.toLowerCase());
+  const lifecycle = action.filter((item) => item.registry && item.event !== "policy_denied");
+  const current = lifecycle.at(-1);
+  if (entry.event === "claim") {
+    if (entry.verdict !== "prewrite" || Date.parse(lease.expiresAt) <= Date.parse(entry.timestamp)) invalid("A claim needs a future expiry and cannot imply execution.");
+    if (action.some((item) => item.event === "attempt" || item.destinationId || item.writeMayHaveHappened)) invalid("A possible or completed write cannot be reclaimed.");
+    if (current && current.event !== "claim_released" && current.event !== "claim_expired") invalid("An active lease cannot be replaced.");
+    const lastFence = Math.max(0, ...lifecycle.map((item) => item.registry!.fence));
+    if (lease.fence !== lastFence + 1) invalid("Claim fencing tokens must increase monotonically.");
+    if (action.some((item) => item.event === "claim" && (item.surface !== entry.surface
+      || item.packageDigest !== entry.packageDigest || item.approvalId !== entry.approvalId))) invalid("An approved action cannot change its identity on reclaim.");
+    return;
+  }
+  if (!current?.registry || current.registry.leaseId !== lease.leaseId || current.registry.tokenHash !== lease.tokenHash
+    || current.registry.fence !== lease.fence || current.registry.expiresAt !== lease.expiresAt
+    || current.surface !== entry.surface || current.attemptId !== entry.attemptId
+    || current.packageDigest !== entry.packageDigest || current.approvalId !== entry.approvalId) invalid("A stale or different lease cannot change registry state.");
+  if (entry.event === "claim_completed") {
+    if (current.event !== "attempt" || entry.verdict !== "complete") invalid("Only an audited dispatched action can complete.");
+    return;
+  }
+  if (current.event !== "claim") invalid("Only an unused claim can be dispatched, released, denied, or expired.");
+  if (entry.event === "claim_expired") {
+    if (Date.parse(entry.timestamp) < Date.parse(lease.expiresAt)) invalid("A live lease cannot expire early.");
+  } else if (Date.parse(entry.timestamp) >= Date.parse(lease.expiresAt)) invalid("An expired lease cannot authorize a change.");
+  if (entry.event === "attempt" && (entry.writeMayHaveHappened !== true || entry.verdict !== "delivery_unknown")) invalid("Dispatch must durably record execution uncertainty.");
+}
+
 function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void {
   if (!entry || typeof entry !== "object") invalid("An audit entry is required.");
   if (typeof entry.id !== "string" || !entry.id.trim()) invalid("Every entry needs an ID.");
   if (typeof entry.timestamp !== "string" || !Number.isFinite(Date.parse(entry.timestamp))) invalid("Every entry needs a valid timestamp.");
-  if (!["attempt", "classification", "observation", "binding", "recheck"].includes(entry.event)) invalid("Unknown audit event.");
+  if (!["attempt", "classification", "observation", "binding", "recheck"].includes(entry.event) && !admissionEvents.has(entry.event)) invalid("Unknown audit event.");
   validateEvidence(entry.evidence);
   if (!entry.evidence.length) invalid("Every audit entry needs evidence explaining its verdict.");
   if (entry.evidenceSource !== undefined && !["host-supplied", "receipts-read"].includes(entry.evidenceSource)) invalid("Unknown evidence source.");
@@ -138,6 +194,7 @@ function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void
   if (entry.observedAt !== undefined && !Number.isFinite(Date.parse(entry.observedAt))) invalid("Observation timestamp is invalid.");
   if (entry.observedPackageDigest !== undefined) validateDigest(entry.observedPackageDigest);
   const classification = classify(entry);
+  validateAdmissionEntry(entry, previous);
   if (entry.verdict !== classification.verdict) invalid("The recorded verdict contradicts its evidence.");
   if (previous.some((item) => item.id === entry.id)) throw new ReceiptsError("duplicate_entry", `Entry ${entry.id} is already recorded.`);
   const sameAttempt = previous.filter((item) => item.attemptId === entry.attemptId);
@@ -221,6 +278,9 @@ function readStore(store: AuditStore): readonly AuditEntry[] {
   return detached(entries);
 }
 
+/** Internal validated snapshot for CAS registry decisions. */
+export function readAuditEntries(store: AuditStore): readonly AuditEntry[] { return readStore(store); }
+
 export function createAuditEntry(write: OutwardWrite, event: AuditEvent = "classification"): AuditEntry {
   requireAction(write);
   const entry: AuditEntry = { ...write, id: randomUUID(), timestamp: new Date().toISOString(), event, verdict: classify(write).verdict,
@@ -228,15 +288,21 @@ export function createAuditEntry(write: OutwardWrite, event: AuditEvent = "class
   return normalizedEntry(entry, []);
 }
 
-function appendEntry(entry: AuditEntry, store: AuditStore, expectedLength?: number, trustedRead = false): AuditEntry {
+function appendEntry(entry: AuditEntry, store: AuditStore, expectedLength?: number, trustedRead = false, trustedAdmission = false): AuditEntry {
   const entries = readStore(store);
   validateEvidence(entry.evidence);
-  const copy = normalizedEntry(entry, entries, trustedRead);
+  const copy = normalizedEntry(entry, entries, trustedRead, trustedAdmission);
   validateEntry(copy, entries);
   if (trustedRead) connectorEntries.add(copy);
+  if (trustedAdmission) admissionEntries.add(copy);
   const result: unknown = store.append(copy, expectedLength ?? entries.length);
   if (result !== undefined) throw new ReceiptsError("invalid_store", "AuditStore.append must finish synchronously and return void.");
   return copy;
+}
+
+/** Internal entry point used by admission.ts; deliberately omitted from package exports. */
+export function recordAdmission(entry: AuditEntry, store: AuditStore, expectedLength: number): AuditEntry {
+  return appendEntry(entry, store, expectedLength, false, true);
 }
 
 /** Public evidence is always cooperative, regardless of caller-supplied trust flags. */
@@ -382,22 +448,49 @@ export class MemoryAuditStore implements AuditStore {
       throw new ReceiptsError("audit_conflict", "The audit changed before append. No entry was written.");
     }
     validateEvidence(entry.evidence);
-    const copy = normalizedEntry(entry, this.#entries, connectorEntries.has(entry));
+    const copy = normalizedEntry(entry, this.#entries, connectorEntries.has(entry), admissionEntries.has(entry));
     validateEntry(copy, this.#entries);
     this.#entries.push(copy);
   }
 }
 
-interface Envelope {
-  version: 1;
-  sequence: number;
-  previousHash: string | null;
-  entry: AuditEntry;
-  hash: string;
-}
+type Envelope = AuditEnvelope;
 
 function envelopeHash(value: Omit<Envelope, "hash">): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+/** Offline verification: no files or provider reads. Does not establish signer trust. */
+export function validateAuditChain(chain: AuditChain): void {
+  try {
+    if (!chain || !Array.isArray(chain.envelopes) || !chain.head) throw new Error("Invalid chain shape.");
+    let previousHash: string | null = null;
+    const entries: AuditEntry[] = [];
+    for (const envelope of chain.envelopes) {
+      const { hash, ...payload } = envelope;
+      if (envelope.version !== 1 || envelope.sequence !== entries.length + 1
+        || envelope.previousHash !== previousHash || envelopeHash(payload) !== hash) throw new Error("Invalid chain link.");
+      validateEntry(envelope.entry, entries);
+      entries.push(envelope.entry);
+      previousHash = hash;
+    }
+    if (chain.head.count !== entries.length || chain.head.hash !== previousHash) throw new Error("Head checkpoint mismatch.");
+  } catch {
+    throw new ReceiptsError("audit_corrupt", "The exported audit chain failed integrity validation.");
+  }
+}
+
+/** Opt-in local export. Custom stores are trusted; their entries are canonically chained here. */
+export function exportAuditChain(store: AuditStore = getDefaultStore()): AuditChain {
+  if (store instanceof JsonlAuditStore) return store.exportChain();
+  const entries = readStore(store);
+  const envelopes: AuditEnvelope[] = [];
+  for (const entry of entries) {
+    const payload: Omit<AuditEnvelope, "hash"> = { version: 1, sequence: envelopes.length + 1,
+      previousHash: envelopes.at(-1)?.hash ?? null, entry };
+    envelopes.push({ ...payload, hash: envelopeHash(payload) });
+  }
+  return detached({ envelopes, head: { count: envelopes.length, hash: envelopes.at(-1)?.hash ?? null } });
 }
 
 /**
@@ -444,8 +537,25 @@ export class JsonlAuditStore implements AuditStore {
   }
 
   read(): readonly AuditEntry[] {
-    if (existsSync(`${this.path}.lock`)) throw new ReceiptsError("audit_locked", "Audit is locked; no unsafe concurrent read was attempted.");
-    return detached(this.#readEnvelopes().map((value) => value.entry));
+    return detached(this.#readSnapshot().map((value) => value.entry));
+  }
+
+  exportChain(): AuditChain {
+    const envelopes = this.#readSnapshot();
+    return detached({ envelopes, head: { count: envelopes.length, hash: envelopes.at(-1)?.hash ?? null } });
+  }
+
+  #readSnapshot(): Envelope[] {
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const lockPath = `${this.path}.lock`;
+    let lock: number;
+    try { lock = openSync(lockPath, "wx", 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ReceiptsError("audit_locked", "Audit is locked; no unsafe concurrent read was attempted.");
+      throw error;
+    }
+    try { return this.#readEnvelopes(); }
+    finally { closeSync(lock); unlinkSync(lockPath); }
   }
 
   append(entry: AuditEntry, expectedLength?: number): void {
@@ -465,7 +575,7 @@ export class JsonlAuditStore implements AuditStore {
         throw new ReceiptsError("audit_conflict", "The audit changed before append. No entry was written.");
       }
       validateEvidence(entry.evidence);
-      const copy = normalizedEntry(entry, envelopes.map((value) => value.entry), connectorEntries.has(entry));
+      const copy = normalizedEntry(entry, envelopes.map((value) => value.entry), connectorEntries.has(entry), admissionEntries.has(entry));
       validateEntry(copy, envelopes.map((value) => value.entry));
       const payload: Omit<Envelope, "hash"> = { version: 1, sequence: envelopes.length + 1,
         previousHash: envelopes.at(-1)?.hash ?? null, entry: copy };

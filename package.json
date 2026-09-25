@@ -1,6 +1,6 @@
 {
   "name": "receipts-workspace",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Verification for every AI agent.",
@@ -13,7 +13,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "npm run build -w @77systems/receipts-core && npm run build -w @77systems/receipts-sdk && npm run build -w @77systems/receipts-github && npm run build -w @77systems/receipts-conformance && npm run build -w @77systems/receipts-mcp && npm run build -w @77systems/receipts-rest && npm run build -w @77systems/receipts-claude-plugin && npm run build -w @77systems/receipts-grok-example && npm run build -w @77systems/receipts-github-example",
+    "build": "npm run build -w @77systems/receipts-core && npm run build -w @77systems/receipts-sdk && npm run build -w @77systems/receipts-proof && npm run build -w @77systems/receipts-otel && npm run build -w @77systems/receipts-github && npm run build -w @77systems/receipts-conformance && npm run build -w @77systems/receipts-mcp && npm run build -w @77systems/receipts-rest && npm run build -w @77systems/receipts-claude-plugin && npm run build -w @77systems/receipts-grok-example && npm run build -w @77systems/receipts-github-example",
     "test": "npm run build && tsx --test packages/*/tests/*.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "demo": "npm run demo -w @77systems/receipts-grok-example",

@@ -64,7 +64,7 @@ export function createGitHubIssuesConnector(options: GitHubConnectorOptions): Tr
       try {
         response = await fetch(url, {
           method: 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-          headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'receipts/0.2.0' },
+          headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'receipts/0.3.0' },
         });
       } catch { return fail('github_read_failed', 'GitHub could not be read. The outcome remains unverified.'); }
       if (response.status !== 200) fail('github_read_failed', `GitHub read returned HTTP ${response.status}. No receipt was issued.`);

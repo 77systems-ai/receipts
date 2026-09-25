@@ -14,7 +14,7 @@ export async function doctor(): Promise<{ ok: boolean; checks: DoctorCheck[] }> 
   checks.push({ check: 'github_credentials', ok: tokenPresent, detail: tokenPresent ? 'A local token is present. Its value and permissions were not inspected.' : 'Set GITHUB_TOKEN or GH_TOKEN locally.' });
   const repositoryReady = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*\/[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(process.env.RECEIPTS_GITHUB_REPO ?? '');
   checks.push({ check: 'github_repository', ok: repositoryReady, detail: repositoryReady ? 'A destination repository is configured.' : 'Set RECEIPTS_GITHUB_REPO to owner/repo.' });
-  const client = new Client({ name: 'receipts-doctor', version: '0.2.0' });
+  const client = new Client({ name: 'receipts-doctor', version: '0.3.0' });
   const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('./cli.js', import.meta.url))],
     env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string,string] => typeof entry[1] === 'string')), stderr: 'pipe' });
   let timer: ReturnType<typeof setTimeout> | undefined;

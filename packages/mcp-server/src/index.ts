@@ -87,7 +87,7 @@ export interface ServerOptions { store?: AuditStore; connectors?: readonly Trust
 
 /** Every server uses the same core contract. Callers supply cooperative evidence; local connectors supply independent observations. */
 export function createReceiptsServer({ store, connectors = [] }: ServerOptions = {}): McpServer {
-  const server = new McpServer({ name: 'receipts', version: '0.2.0' });
+  const server = new McpServer({ name: 'receipts', version: '0.3.0' });
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const appendOnly = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
   server.registerTool('receipts.classify', {

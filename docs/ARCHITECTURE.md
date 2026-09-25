@@ -1,4 +1,4 @@
-# Destination verification v0.2
+# Destination verification v0.3
 
 ```text
 approved payload + account + UUID action + approval
@@ -59,3 +59,20 @@ Pure `classify` still supports the previous data shape. New durable entries requ
 The four verdicts and precedence remain `complete → delivery_unknown → package_unverified → prewrite`. Every verdict denies automatic retry and second writes. Rearm requires audited affirmative prewrite, fixed cause, new digest, and new attempt. MCP/REST remain loopback-only and are not hosted authentication services.
 
 All connector integrations must run the public [conformance suite](../packages/conformance/README.md), plus provider-specific identity/credential-boundary tests. The real [GitHub example](../examples/github-issues/README.md) supplies the integration acceptance check.
+
+
+## v0.3 admission lifecycle
+
+The registry writes protected `claim`, `claim_expired`, `claim_released`, `claim_completed`, `duplicate`, and `policy_denied` events into the same hash chain. A dispatch is an `attempt` carrying its lease metadata and AUTHORIZED admission decision. These admission decisions are distinct from destination verdicts, so classification precedence is unchanged. Public record/direct-append routes cannot forge protected lifecycle events.
+
+Account/action identity selects a lease; random lease ownership tokens are returned locally, while only their hashes are audited. Reclaimed unused leases advance a monotonically increasing fence. Expired or released owners cannot dispatch or complete another owner's action. The audit compare-and-append plus lock serializes both lease changes and policy budgets across processes. JSONL reads/export snapshots also hold the lock to avoid torn log/head observations.
+
+A dispatch records uncertainty atomically with policy admission. Rate limits count all such dispatches, regardless of callback outcome; policy denials consume no budget. A crash after dispatch remains uncertain forever until read-back, and TTL never permits a second write. Completion requires an exact historical binding and can be reconstructed from the audit after restart without retaining a raw lease token. Legacy v0.2 attempts do not gain invented leases and remain blocked/reconcilable under their original evidence.
+
+## Signatures, evaluations and observability
+
+`exportAuditChain` returns a consistent local snapshot; `validateAuditChain` validates its contiguous links, signed head-compatible count/hash and evidence/admission rules without I/O. Surface definitions are trusted local configuration, never accepted from a proof. Signed proofs add Ed25519 authentication of a receipt hash, head, signer ID and signing time; verification requires the expected key separately. This establishes a local signer's attestation, not a provider signature or public authority. Full snapshot exports are opt-in and may reveal unrelated audit metadata.
+
+Conformance benchmark2.0.0 emits self-attested evaluation receipts. Actual case/action identities are seeded; all decisions, including unobserved ones after failure, remain represented. False-complete, false-block and unsafe-dispatch statistics retain explicit denominators. Certification eligibility requires a passing complete report and a matching publication declaration. The local checker makes no reachability or authority claim about the declared URL.
+
+OpenTelemetry is an optional wrapper package. Unwrapped core classification remains pure. Traced operations export only allowlisted verdict/source labels and validated digests; exceptions, freeform error messages and identifiers are excluded. Instrumentation cannot alter business outcomes. The host chooses its exporter and destination; Receipts installs none.

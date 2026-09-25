@@ -83,3 +83,47 @@ The default `JsonlAuditStore` uses `RECEIPTS_AUDIT_PATH` or `.receipts/audit.jso
 New writes use a strict field allowlist. Payloads, credentials, provider response bodies, arbitrary extra properties, and status text are not retained. Freeform evidence descriptions and external references become SHA-256 digests; displayed descriptions are code-defined summaries. Identifier fields are metadata: use opaque IDs, never credentials or payload text. The audit remains on the local machine. Existing v0.1 chains are readable without rewriting their hashes and are treated as cooperative; missing legacy scope is reported as `legacy-unknown`.
 
 `MemoryAuditStore` implements the same synchronous append-only rules. Custom stores implement synchronous `read(): readonly AuditEntry[]` and `append(entry, expectedLength?): void`, return detached entries, preserve order, and compare the expected length atomically. Custom store implementations are trusted application code. Async stores are outside this API.
+
+## Atomic admission and policy (v0.3)
+
+Admission is separate from the four destination-verification verdicts. An unused reservation returns `CLAIMED`; a competing or completed action returns `DUPLICATE`. `dispatch` returns `AUTHORIZED` or `policy_denied`, naming the rule that fired. These decisions, lease changes, and dispatches participate in the same append-only hash chain.
+
+```ts
+import { createIdempotencyRegistry } from "@77systems/receipts-core";
+
+const registry = createIdempotencyRegistry({ store, ttlMs: 60_000 });
+const result = registry.claim(action);
+if (result.verdict === "DUPLICATE") {
+  // Reconcile the existing action. Do not invoke the outward writer.
+} else {
+  const admission = registry.dispatch(result.claim, {
+    rules: [{ id: "block-archived-account", effect: "block", destinationAccount: "social:archived" }],
+    rateLimits: [{ id: "hourly-social-budget", surface: "social-publish", maxWrites: 10, windowMs: 3_600_000 }],
+  });
+  if (admission.verdict === "policy_denied") {
+    registry.release(result.claim); // Still unused; no write was authorized.
+  } else {
+    // Only now invoke the outward writer once. A failure is delivery_unknown.
+    // After an exact destination read and binding:
+    // registry.complete(result.claim, actualDestinationId);
+  }
+}
+```
+
+Claims key on exact destination account plus the UUID action ID, case-insensitively. They hold a random private token and a monotonically increasing fence. Only the token's SHA-256 digest is audited; exporting an audit does not export active lease authority. Expiry or release permits a new owner only while the reservation has never been dispatched. Stale token/fence combinations cannot dispatch or release a newer claim.
+
+`dispatch` evaluates policy and atomically appends the execution attempt that also consumes the shared rate budget. Persisting that attempt happens before the provider callback. Once dispatched, a crash, expired TTL, read failure, or release request cannot authorize another write. Observe and bind the existing destination instead. Policy denials do not consume write budget and leave the unused lease available to release or expire.
+
+Separate registry instances and Node processes coordinate through the store's atomic expected-length check and JSONL lock. Contention gets bounded retries; sustained lock conflicts fail closed with `audit_busy`. JSONL reads and exports hold the same lock for a consistent log/checkpoint snapshot. A crash during a store operation can still require inspection of a stale lock or interrupted append; lease TTL is not permission to rewrite an inconsistent audit.
+
+`complete(claim, objectId)` requires an existing exact audited binding. `completeVerified(action, objectId)` supports a read-back after restart: the existing dispatch and binding supply authority without recovering the raw lease token. Repeating completion is idempotent. Existing v0.2 attempts retain their original safety rules and can still reconcile through ordinary read-back/binding; they lack lease metadata and do not need a registry-completion event.
+
+The default policy permits registered surfaces. Explicit matching block rules always win. Allow rules do not silently turn the policy into a whitelist; set `defaultEffect: "block"` when that behavior is intended. An unmatched explicit default block names `default-policy`. Rate rules count durable attempts across the configured surface/account scope during a rolling window, including uncertain dispatches and existing v0.2 attempts. A clock rollback counts future-dated attempts conservatively.
+
+`DUPLICATE` refusal records use a fresh decision-only attempt UUID, so a caller's changed package or idempotency key cannot amend the original execution attempt. They are admission refusals, never execution attempts. Public `record` and direct built-in-store `append` cannot forge protected lease or policy events.
+
+## Offline audit export
+
+`exportAuditChain(store?)` returns `{envelopes, head}`. JSONL exports retain the original envelope hashes; memory and trusted custom stores produce the same canonical envelope format from their validated entries. `validateAuditChain(bundle)` checks every hash, link, entry, and head checkpoint offline and throws `audit_corrupt` on failure. Register the relevant surface definitions before validating, including the GitHub issues connector when the chain uses that surface.
+
+Export is opt-in and does not contact Receipts or a provider. It contains scoped audit metadata, such as account and action identifiers. Legacy v0.1 records retain their original freeform evidence to preserve old hashes; inspect a legacy-containing export before publishing it. A chain proves integrity relative to its retained head; signer identity and trust are separate concerns handled by the signed-receipt package.

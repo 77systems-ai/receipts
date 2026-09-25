@@ -1,1 +1,1 @@
-{"mcpServers":{"receipts":{"command":"npx","args":["-y","@77systems/receipts-mcp@0.2.0"]}}}
+{"mcpServers":{"receipts":{"command":"npx","args":["-y","@77systems/receipts-mcp@0.3.0"]}}}

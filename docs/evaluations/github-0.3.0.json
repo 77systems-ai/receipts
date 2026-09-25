@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "receipts-evaluation-v1",
+  "benchmark": {
+    "name": "receipts-connector-conformance",
+    "version": "2.0.0"
+  },
+  "connector": {
+    "name": "GitHub issues connector",
+    "version": "0.3.0"
+  },
+  "provenance": {
+    "environment": {
+      "node": "24.19.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "seed": "github-v0.3.0",
+    "idGeneration": "sha256-seed-case-purpose-v1",
+    "execution": "local-controlled-fixture",
+    "authority": "self-attested"
+  },
+  "cases": [
+    {
+      "id": "99dce902-7921-5542-8dac-8c9cdafa1b48",
+      "name": "lost-response",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "uncertain-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "duplicate-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "recovered-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    },
+    {
+      "id": "8c39d95a-3e81-5a70-ad6e-cca46e33817f",
+      "name": "wrong-account",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "wrong-account-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "3cb88b05-63c6-502b-89f0-08178e71f648",
+      "name": "changed-content",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "edited-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "b276ded9-2e2d-5b70-a032-f99c4df9542b",
+      "name": "timeout",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "timeout-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "timeout-duplicate-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "8050439d-27c3-5488-b995-8c1790a53424",
+      "name": "forged-evidence",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "forged-independent-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "a6910da7-0642-5a05-a05f-8d52ba8cd951",
+      "name": "reapproved-content",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "recycled-approval-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "new-approval-dispatch",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    },
+    {
+      "id": "f18d6156-53ec-5a59-8413-0ea055981390",
+      "name": "recheck-history",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "unchanged-recheck-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        },
+        {
+          "name": "edited-recheck-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "historical-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    }
+  ],
+  "calibration": {
+    "falseComplete": {
+      "errors": 0,
+      "denominator": 6,
+      "planned": 6,
+      "unobserved": 0,
+      "rate": 0
+    },
+    "falseBlock": {
+      "errors": 0,
+      "denominator": 4,
+      "planned": 4,
+      "unobserved": 0,
+      "rate": 0
+    },
+    "unsafeDispatch": {
+      "errors": 0,
+      "denominator": 3,
+      "planned": 3,
+      "unobserved": 0,
+      "rate": 0
+    }
+  },
+  "summary": {
+    "passed": 7,
+    "failed": 0,
+    "notRun": 0,
+    "complete": true,
+    "conforms": true
+  }
+}

@@ -8,4 +8,4 @@ startCommand:
         type: string
         description: Local path for the append-only receipts audit.
   commandFunction: |-
-    (config) => ({ command: 'npx', args: ['-y', '@77systems/receipts-mcp@0.2.0'], env: config.auditPath ? { RECEIPTS_AUDIT_PATH: config.auditPath } : {} })
+    (config) => ({ command: 'npx', args: ['-y', '@77systems/receipts-mcp@0.3.0'], env: config.auditPath ? { RECEIPTS_AUDIT_PATH: config.auditPath } : {} })

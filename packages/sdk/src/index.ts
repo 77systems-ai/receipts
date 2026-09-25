@@ -4,6 +4,7 @@ import {
   classify,
   createAuditEntry,
   getDefaultStore,
+  createIdempotencyRegistry,
   getSurface,
   observeDestination,
   record,
@@ -16,6 +17,7 @@ import {
   type EvidenceSource,
   type OutwardWrite,
   type Receipt,
+  type AdmissionDecision, type WritePolicy, type ApprovedAction, type IdempotencyRegistry,
 } from "@77systems/receipts-core";
 import { digestPayload, freezePayload } from "./digest.js";
 
@@ -81,13 +83,27 @@ export interface ExecutionReceipt {
 export interface ReceiptsOptions {
   store?: AuditStore;
   connector?: DestinationConnector;
+  policy?: WritePolicy;
+  claimTtlMs?: number;
 }
 
 export class DuplicateWriteError extends Error {
   readonly code = "duplicate_write_refused";
-  constructor() {
+  readonly verdict = "DUPLICATE";
+  constructor(readonly decision?: AdmissionDecision) {
     super("This attempt or approved action already has an execution claim. Reconcile the existing destination; do not execute again. A separately approved action needs a new actionId and approvalId.");
     this.name = "DuplicateWriteError";
+  }
+}
+
+export class PolicyDeniedError extends Error {
+  readonly code = "policy_denied";
+  readonly verdict = "policy_denied";
+  readonly ruleId: string;
+  constructor(readonly decision: AdmissionDecision) {
+    super("The write was denied by the configured policy. No destination write was made.");
+    this.name = "PolicyDeniedError";
+    this.ruleId = decision.ruleId!;
   }
 }
 
@@ -121,10 +137,14 @@ function scope(write: OutwardWrite) {
 export class ReceiptsClient {
   readonly store: AuditStore;
   readonly connector?: DestinationConnector;
+  readonly registry: IdempotencyRegistry;
+  readonly policy: WritePolicy;
 
   constructor(options: ReceiptsOptions = {}) {
     this.store = options.store ?? getDefaultStore();
     this.connector = options.connector;
+    this.policy = structuredClone(options.policy ?? {});
+    this.registry = createIdempotencyRegistry({store:this.store,ttlMs:options.claimTtlMs});
   }
 
   async execute<T>(options: ExecuteOptions<T>): Promise<ExecutionReceipt> {
@@ -145,16 +165,19 @@ export class ReceiptsClient {
       neverReached: false,
       evidence: executorEvidence("Execution claimed before dispatch. Observe the destination if interrupted; never retry automatically."),
     };
-    // Validates UUID and account/approval shape before claiming or dispatching.
-    const claim = createAuditEntry(write, "attempt");
-    const entries = this.store.read();
-    if (entries.some((entry) => entry.attemptId === attemptId ||
-      (entry.destinationAccount === destinationAccount &&
-        (entry.actionId?.toLowerCase() === actionId.toLowerCase() || entry.approvalId === approvalId)))) {
-      throw new DuplicateWriteError();
+    const approved: ApprovedAction = {surface:options.surface,attemptId,actionId,destinationAccount,approvalId,idempotencyKey,packageDigest};
+    const claimed = this.registry.claim(approved);
+    if (claimed.verdict === "DUPLICATE") throw new DuplicateWriteError(claimed);
+    const admission = this.registry.dispatch(claimed.claim,this.policy);
+    if (admission.verdict === "policy_denied") {
+      try { this.registry.release(claimed.claim); }
+      catch (error) {
+        // The denial is already durable. Expiry or another owner reclaiming an
+        // unused lease must not hide its named policy decision.
+        if (!(error instanceof ReceiptsError) || !["claim_expired", "stale_claim"].includes(error.code)) throw error;
+      }
+      throw new PolicyDeniedError(admission);
     }
-    // Atomic compare-and-append defeats two clients that read the same tail.
-    record(claim, this.store, entries.length);
     try {
       await options.execute(Object.freeze({ payload, packageDigest, attemptId, actionId, destinationAccount, approvalId, idempotencyKey }));
     } catch {
@@ -215,6 +238,7 @@ export class ReceiptsClient {
     }
     const entry = this.store.read().find((item) => item.id === receipt.auditEntryId);
     if (!entry) throw new VerificationPendingError("The connector receipt was not durably recorded.");
+    if (receipt.verdict === "complete") this.completeRegistry(entry);
     return Object.freeze({
       surface: receipt.surface, attemptId: receipt.attemptId, actionId: receipt.actionId,
       destinationAccount: receipt.destinationAccount, approvalId: receipt.approvalId,
@@ -280,10 +304,21 @@ export class ReceiptsClient {
     return this.finish({ ...observation, boundPackageDigest: write.packageDigest }, execution);
   }
 
+  private completeRegistry(write: OutwardWrite): void {
+    const attempt=this.store.read().find(entry=>entry.event==="attempt"&&entry.attemptId===write.attemptId);
+    // Legacy v0.2 execution claims remain reconcilable without inventing a lease.
+    if (attempt?.registry && write.destinationId) {
+      this.registry.completeVerified({surface:attempt.surface,attemptId:attempt.attemptId,
+        actionId:attempt.actionId!,destinationAccount:attempt.destinationAccount!,approvalId:attempt.approvalId!,
+        packageDigest:attempt.packageDigest,...(attempt.idempotencyKey?{idempotencyKey:attempt.idempotencyKey}:{})},write.destinationId);
+    }
+  }
+
   private finish(write: OutwardWrite, execution: ExecutionReceipt["execution"]): ExecutionReceipt {
     const classification = classify(write);
     const entry = createAuditEntry(write, "classification");
     record(entry, this.store);
+    if (classification.verdict === "complete") this.completeRegistry(write);
     return Object.freeze({
       surface: write.surface, attemptId: write.attemptId, actionId: write.actionId!,
       destinationAccount: write.destinationAccount!, approvalId: write.approvalId!, idempotencyKey: write.idempotencyKey ?? "",

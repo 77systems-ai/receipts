@@ -60,3 +60,14 @@ All callers must share one durable `AuditStore`. Custom stores must implement sy
 Approved payloads are detached and recursively frozen before dispatch. Only plain JSON values are supported; cycles, undefined values, non-finite numbers, sparse arrays, getters, class instances, and symbol keys are rejected. Object keys sort; array order matters. The encoding is `receipts-json-v1`, not RFC 8785.
 
 The wrapper governs its own executor path. Application code that calls a provider directly bypasses it; the SDK is not a sandbox for arbitrary code or a language model's final wording.
+
+
+## v0.3 admission and policy
+
+`createReceipts({store,connector,policy?,claimTtlMs?})` uses core's atomic idempotency registry. It claims a reservation and then dispatches under policy; the dispatch append both consumes the rate budget and records uncertainty before the callback. A default client behaves as before, with additional audit events.
+
+`policy` supports `{defaultEffect?:'allow'|'block',rules:[{id,effect,surface?,destinationAccount?}],rateLimits:[{id,maxWrites,windowMs,surface?,destinationAccount?}]}`. Omitted configuration is permissive within registered surfaces. Explicit blocks win. Rates count dispatched attempts in the sliding window, including uncertain writes, across clients sharing the store. Host code owns policy configuration; do not accept arbitrary policy overrides from an untrusted agent.
+
+A duplicate still throws `DuplicateWriteError`, now with `verdict: 'DUPLICATE'` and its persisted `decision`. A policy denial throws `PolicyDeniedError` with `verdict: 'policy_denied'`, `ruleId`, and `decision`; the callback is never invoked. The unused denied reservation is released, allowing a deliberate policy correction to proceed with the original approval. Unknown surfaces and audit failures still fail closed.
+
+`client.registry` exposes local claim management for integrations that need it. Reservations default to 60 seconds. Expiry only recovers unused reservations; a dispatched write never becomes retryable because time passed. Successful read-back marks a leased action completed, including reconciliation by a newly created client after restart. Legacy v0.2 attempts without leases retain their original safe reconciliation path.

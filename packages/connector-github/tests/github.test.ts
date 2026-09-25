@@ -32,7 +32,7 @@ connectorConformance('GitHub issues connector', (context) => {
     setWrongAccount(){state={...state,repository_url:'https://api.github.com/repos/another/test'};},
     setReadFailure(message){readFailure=message;},
   };
-});
+}, {connectorVersion:'0.3.0',seed:'github-v0.3.0',evaluationPath:'docs/evaluations/github-0.3.0.json'});
 
 test('GitHub validates the exact object and rejects cross-repository data, pull requests, and changed immutable IDs', async t => {
   let state: Record<string,unknown> = responseData();
