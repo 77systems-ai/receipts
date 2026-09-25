@@ -324,9 +324,12 @@ test('policy denies before dispatch, names its rule, and leaves a recoverable un
   const name=surface();const account='provider:blocked';
   const options={...identity(account),surface:name,attemptId:'blocked',payload:{private:'do-not-log'},execute(){writes++;}};
   const client=createReceipts({store,policy:{rules:[{id:'block-account',effect:'block',destinationAccount:account}]}});
-  await assert.rejects(client.execute(options),(error:unknown)=>error instanceof PolicyDeniedError&&error.verdict==='policy_denied'&&error.ruleId==='block-account');
+  await assert.rejects(client.execute(options),(error:unknown)=>error instanceof PolicyDeniedError&&error.verdict==='policy_denied'&&error.ruleId==='block-account'&&Boolean(error.decision.auditEntryId));
   assert.equal(writes,0);assert.equal(store.read().filter(entry=>entry.event==='attempt').length,0);
+  // Fail fast: a forbidden write is refused before any reservation exists, as one audited decision.
+  assert.deepEqual(store.read().map(entry=>entry.event),['policy_denied']);
   assert.equal(store.read().find(entry=>entry.event==='policy_denied')?.admission?.ruleId,'block-account');
+  assert.equal(store.read()[0]!.registry,undefined);
   // A deliberate policy correction can authorize the same never-dispatched approval.
   await createReceipts({store}).execute({...options,attemptId:'after-policy-correction'});
   assert.equal(writes,1);
@@ -357,12 +360,36 @@ test('registry completion survives SDK restart after destination read-back', asy
   assert.ok(store.read().every(entry=>!('token' in (entry.registry??{}))));
 });
 
-test('lease expiry during denied-reservation cleanup retains the named policy outcome',async()=>{
- const {MemoryAuditStore,ReceiptsError}=await import('@77systems/receipts-core');
+test('a budget consumed between claim and dispatch is denied at dispatch; a failed release keeps the named outcome',async()=>{
+ const {MemoryAuditStore,ReceiptsError,createIdempotencyRegistry}=await import('@77systems/receipts-core');
  const {PolicyDeniedError}=await import('../src/index.js');
- const client=createReceipts({store:new MemoryAuditStore(),policy:{defaultEffect:'block'}});
+ const base=new MemoryAuditStore();const name=surface();
+ const policy={rateLimits:[{id:'one-dispatch',maxWrites:1,windowMs:60_000,surface:name}]};
+ const mine={...identity(),surface:name,attemptId:'raced-budget'};
+ let injected=false;
+ const store:AuditStore={
+  read(){
+   const entries=base.read();
+   if(!injected&&entries.some(entry=>entry.event==='claim'&&entry.actionId===mine.actionId)){
+    // Claim-time evaluation passed. Before our dispatch snapshot, a competitor takes the only budget slot.
+    injected=true;
+    const competitor=createIdempotencyRegistry({store:base});
+    const lease=competitor.claim({...mine,...identity(),attemptId:'competitor',packageDigest:digestPayload({other:true})},policy);
+    if(lease.verdict!=='CLAIMED')throw new Error('competitor must claim');
+    if(competitor.dispatch(lease.claim,policy).verdict!=='AUTHORIZED')throw new Error('competitor must dispatch');
+    return base.read();
+   }
+   return entries;
+  },
+  append(entry,expectedLength){base.append(entry,expectedLength);},
+ };
+ const client=createReceipts({store,policy});
  client.registry.release=()=>{throw new ReceiptsError('claim_expired','Reservation expired during cleanup.');};
  let writes=0;
- await assert.rejects(client.execute({...identity(),surface:surface(),attemptId:'denial-cleanup',payload:{approved:true},execute(){writes++;}}),error=>error instanceof PolicyDeniedError&&error.ruleId==='default-policy');
+ await assert.rejects(client.execute({...mine,payload:{approved:true},execute(){writes++;}}),error=>error instanceof PolicyDeniedError&&error.ruleId==='one-dispatch');
  assert.equal(writes,0);
+ assert.ok(injected,'the race must actually occur');
+ const events=base.read().filter(entry=>entry.actionId===mine.actionId).map(entry=>entry.event);
+ assert.deepEqual(events,['claim','policy_denied'],'dispatch remains the enforcement boundary after a passing claim-time check');
+ assert.equal(base.read().filter(entry=>entry.event==='attempt').length,1);
 });

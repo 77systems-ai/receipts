@@ -138,6 +138,12 @@ export interface AdmissionDecision {
 export type ClaimDecision = (AdmissionDecision & { verdict: "CLAIMED"; claim: ClaimLease })
   | (AdmissionDecision & { verdict: "DUPLICATE" });
 
+/** A durable refusal recorded before any reservation existed. It holds no lease and consumes no budget. */
+export type PolicyDeniedDecision = AdmissionDecision & { verdict: "policy_denied"; ruleId: string };
+
+/** Pure policy result. `allowed` is not a reservation; only claim and dispatch change durable state. */
+export type PolicyEvaluation = { verdict: "allowed" } | { verdict: "policy_denied"; ruleId: string };
+
 export interface PolicyRule {
   id: string;
   effect: "allow" | "block";

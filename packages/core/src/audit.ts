@@ -149,6 +149,12 @@ function validateAdmissionEntry(entry: AuditEntry, previous: readonly AuditEntry
     if (entry.registry || !entry.admission.reason || entry.verdict !== "prewrite") invalid("Duplicate decisions cannot alter a lease.");
     return;
   }
+  if (entry.event === "policy_denied" && !entry.registry) {
+    // A denial evaluated before any reservation existed is a decision record: it holds
+    // no lease, changes no lifecycle state, and cannot imply that execution began.
+    if (entry.verdict !== "prewrite" || entry.writeMayHaveHappened || entry.destinationId) invalid("A pre-claim policy denial cannot imply execution.");
+    return;
+  }
   const lease = entry.registry;
   if (!lease || !uuidPattern.test(lease.leaseId) || !Number.isSafeInteger(lease.fence) || lease.fence < 1
     || !Number.isFinite(Date.parse(lease.expiresAt))) invalid("Registry entries require valid fenced lease metadata.");

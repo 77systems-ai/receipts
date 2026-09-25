@@ -170,7 +170,93 @@ for (const backend of ["memory", "jsonl"] as const) {
     assert.deepEqual(store.read().slice(0, prior.length), prior);
     assert.equal(store.read().filter((entry) => entry.event === "attempt").length, 1);
   });
+
+  test(`${backend}: a policy denial at claim records one decision, reserves nothing, and dispatch still enforces`, (context) => {
+    const store = makeStore(context);
+    let now = start;
+    const registry = createIdempotencyRegistry({ store, ttlMs: 120_000, now: () => now });
+    const blocked = { rules: [{ id: "blocked-account", effect: "block" as const, destinationAccount: action.destinationAccount }] };
+    const denied = registry.claim(action, blocked);
+    assert.equal(denied.verdict, "policy_denied");
+    if (denied.verdict !== "policy_denied") throw Error("Expected a policy denial.");
+    assert.equal(denied.ruleId, "blocked-account");
+    assert.deepEqual(store.read().map((entry) => entry.event), ["policy_denied"]);
+    const record = store.read()[0]!;
+    assert.equal(record.id, denied.auditEntryId);
+    assert.equal(record.registry, undefined, "A pre-claim denial holds no lease.");
+    assert.equal(record.attemptId, action.attemptId);
+    assert.equal(record.verdict, "prewrite");
+    // The denial neither consumed the approval nor reserved the action: a corrected policy proceeds.
+    const lease = won(registry.claim(action, { rules: [] }));
+    assert.equal(store.read().filter((entry) => entry.event === "claim").length, 1);
+    // Budgets are enforced at dispatch even when claim-time evaluation passed.
+    const budget = { rateLimits: [{ id: "one-per-minute", maxWrites: 1, windowMs: 60_000, surface: action.surface }] };
+    const competitor = createIdempotencyRegistry({ store, ttlMs: 120_000, now: () => now });
+    const other = competitor.claim(nextAction(), budget);
+    assert.equal(other.verdict, "CLAIMED");
+    if (other.verdict !== "CLAIMED") throw Error("Expected a claim.");
+    assert.equal(competitor.dispatch(other.claim, budget).verdict, "AUTHORIZED");
+    const late = registry.dispatch(lease, budget);
+    assert.equal(late.verdict, "policy_denied");
+    assert.equal(late.ruleId, "one-per-minute");
+    assert.equal(store.read().filter((entry) => entry.event === "attempt").length, 1);
+    now += 60_000;
+    assert.equal(registry.dispatch(lease, budget).verdict, "AUTHORIZED");
+    validateAuditChain(exportAuditChain(store));
+  });
+
+  test(`${backend}: released or expired unused reservations free their approval; live and dispatched ones spend it`, (context) => {
+    const store = makeStore(context);
+    let now = start;
+    const registry = createIdempotencyRegistry({ store, ttlMs: 100, now: () => now });
+    const other: ApprovedAction = { ...action, actionId: randomUUID(), attemptId: "other-attempt" };
+    const first = won(registry.claim(action));
+    const live = registry.claim(other);
+    assert.equal(live.verdict, "DUPLICATE");
+    assert.equal(live.reason, "approval_reused", "Two live reservations under one approval could both dispatch.");
+    assert.equal(registry.release(first).verdict, "RELEASED");
+    const afterRelease = won(registry.claim(other));
+    assert.equal(registry.claim(action).reason, "approval_reused", "The approval now belongs to the live reservation.");
+    assert.equal(registry.release(afterRelease).verdict, "RELEASED");
+    const reclaimed = won(registry.claim(action));
+    now += 101;
+    const afterExpiry = won(registry.claim(other));
+    assert.equal(afterExpiry.fence, afterRelease.fence + 1);
+    assert.throws(() => registry.dispatch(reclaimed), errorCode("claim_expired"), "The expired owner cannot write.");
+    assert.equal(store.read().filter((entry) => entry.event === "attempt").length, 0);
+    assert.equal(registry.dispatch(afterExpiry).verdict, "AUTHORIZED");
+    const spent = registry.claim({ ...action, attemptId: "after-dispatch" });
+    assert.equal(spent.verdict, "DUPLICATE");
+    assert.equal(spent.reason, "approval_reused", "A possible write spends the approval permanently.");
+    assert.equal(store.read().filter((entry) => entry.event === "attempt").length, 1);
+    validateAuditChain(exportAuditChain(store));
+  });
 }
+
+test("evaluate is a pure pre-check: no audit mutation, no budget consumption, same snapshot rules", () => {
+  const store = new MemoryAuditStore();
+  let now = start;
+  const registry = createIdempotencyRegistry({ store, ttlMs: 10_000, now: () => now });
+  const budget = { rateLimits: [{ id: "one-per-minute", maxWrites: 1, windowMs: 60_000, surface: action.surface }] };
+  assert.deepEqual(registry.evaluate(action, budget), { verdict: "allowed" });
+  assert.deepEqual(registry.evaluate(action, { defaultEffect: "block" }), { verdict: "policy_denied", ruleId: "default-policy" });
+  assert.equal(store.read().length, 0);
+  registry.dispatch(won(registry.claim(nextAction(), budget)), budget);
+  assert.deepEqual(registry.evaluate(action, budget), { verdict: "policy_denied", ruleId: "one-per-minute" });
+  now += 60_000;
+  assert.deepEqual(registry.evaluate(action, budget), { verdict: "allowed" });
+  assert.throws(() => registry.evaluate(action, { rules: [{ id: "dup", effect: "block" }, { id: "dup", effect: "allow" }] }), errorCode("invalid_policy"));
+  assert.throws(() => registry.evaluate({ ...action, surface: "unregistered" }, budget), errorCode("not_a_destination_write"));
+  assert.equal(store.read().filter((entry) => entry.event !== "claim" && entry.event !== "attempt").length, 0);
+});
+
+test("a forged pre-claim policy denial cannot enter the audit through public record", () => {
+  const store = new MemoryAuditStore();
+  const forged: AuditEntry = { ...createAuditEntry(action), event: "policy_denied", admission: { verdict: "policy_denied", ruleId: "forged" } };
+  assert.throws(() => record(forged, store), errorCode("protected_admission"));
+  assert.throws(() => store.append(forged), errorCode("protected_admission"));
+  assert.equal(store.read().length, 0);
+});
 
 test("policy allow rules do not silently deny other actions; explicit default block and deny precedence work", () => {
   const allow = { id: "allow-github", effect: "allow" as const, surface: "http-post" };

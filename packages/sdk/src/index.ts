@@ -166,8 +166,12 @@ export class ReceiptsClient {
       evidence: executorEvidence("Execution claimed before dispatch. Observe the destination if interrupted; never retry automatically."),
     };
     const approved: ApprovedAction = {surface:options.surface,attemptId,actionId,destinationAccount,approvalId,idempotencyKey,packageDigest};
-    const claimed = this.registry.claim(approved);
+    // Policy is checked twice on purpose: here, before any reservation exists, so a
+    // forbidden write is refused with a single audited decision; and again at dispatch,
+    // the enforcement boundary, because shared budgets move between the two steps.
+    const claimed = this.registry.claim(approved, this.policy);
     if (claimed.verdict === "DUPLICATE") throw new DuplicateWriteError(claimed);
+    if (claimed.verdict === "policy_denied") throw new PolicyDeniedError(claimed);
     const admission = this.registry.dispatch(claimed.claim,this.policy);
     if (admission.verdict === "policy_denied") {
       try { this.registry.release(claimed.claim); }

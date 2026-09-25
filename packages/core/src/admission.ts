@@ -4,7 +4,7 @@ import { digestPackage } from "./classify.js";
 import { getSurface } from "./registry.js";
 import {
   ReceiptsError, type AdmissionDecision, type ApprovedAction, type AuditEntry, type AuditStore,
-  type ClaimDecision, type ClaimLease, type RegistryAudit, type WritePolicy,
+  type ClaimDecision, type ClaimLease, type PolicyDeniedDecision, type PolicyEvaluation, type RegistryAudit, type WritePolicy,
 } from "./types.js";
 
 export interface IdempotencyRegistryOptions {
@@ -19,6 +19,14 @@ const retrySignal = new Int32Array(new SharedArrayBuffer(4));
 const ruleIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const lifecycleEvents = new Set(["claim", "attempt", "claim_expired", "claim_released", "claim_completed"]);
 
+/**
+ * Action identity is the exact account plus the caller's UUID. RFC 9562 defines UUID
+ * hexadecimal as case-insensitive, and hosts legitimately emit either case for the same
+ * identifier, so the UUID alone is canonicalized to lowercase. Every other identity
+ * field (account, approval, attempt, digest) is an opaque string compared exactly;
+ * see sameIdentity. Do not "fix" this asymmetry: uppercase UUIDs must not evade the
+ * duplicate guard, and accounts must never be folded because providers may be case-aware.
+ */
 function sameAction(entry: ApprovedAction | AuditEntry, action: ApprovedAction): boolean {
   return entry.destinationAccount === action.destinationAccount && entry.actionId?.toLowerCase() === action.actionId.toLowerCase();
 }
@@ -40,6 +48,22 @@ function currentLease(entries: readonly AuditEntry[], action: ApprovedAction): A
 function isPossibleWrite(entry: AuditEntry): boolean {
   return entry.event === "attempt" || entry.writeMayHaveHappened === true || entry.destinationId !== undefined;
 }
+/**
+ * An approval authorizes exactly one action on its account. It is spent by any other
+ * action that may have written, or that holds a live (unexpired, unreleased) reservation:
+ * two live reservations under one approval could both dispatch. A reservation that was
+ * released or has expired unused never reached the destination, so it does not spend the
+ * approval; refusals (duplicate, pre-claim policy denials) never spend it either.
+ */
+function approvalConsumed(entries: readonly AuditEntry[], action: ApprovedAction, now: number): boolean {
+  const others = entries.filter((entry) => entry.destinationAccount === action.destinationAccount && entry.approvalId === action.approvalId
+    && entry.actionId !== undefined && entry.actionId.toLowerCase() !== action.actionId.toLowerCase());
+  if (others.some(isPossibleWrite)) return true;
+  return [...new Set(others.map((entry) => entry.actionId!.toLowerCase()))].some((actionId) => {
+    const current = currentLease(entries, { ...action, actionId });
+    return current?.event === "claim" && Date.parse(current.registry!.expiresAt) > now;
+  });
+}
 function decision(entry: AuditEntry): AdmissionDecision {
   return { verdict: entry.admission!.verdict, auditEntryId: entry.id,
     ...(entry.admission!.ruleId ? { ruleId: entry.admission!.ruleId } : {}),
@@ -53,9 +77,8 @@ function matchScope(rule: { surface?: string; destinationAccount?: string }, act
     && (rule.destinationAccount === undefined || rule.destinationAccount === action.destinationAccount);
 }
 
-/** Policy evaluation creates no audit mutation. Budget is consumed only by durable dispatch. */
-export function evaluatePolicy(action: ApprovedAction, policy: WritePolicy = {}, entries: readonly AuditEntry[] = [], now = Date.now()): { verdict: "allowed" } | { verdict: "policy_denied"; ruleId: string } {
-  getSurface(action.surface);
+/** Structural validation of host-owned policy configuration. Throws invalid_policy; evaluates nothing. */
+export function validatePolicy(policy: WritePolicy = {}): void {
   if (!policy || typeof policy !== "object" || (policy.defaultEffect !== undefined && !["allow", "block"].includes(policy.defaultEffect))
     || (policy.rules !== undefined && !Array.isArray(policy.rules)) || (policy.rateLimits !== undefined && !Array.isArray(policy.rateLimits))) {
     throw new ReceiptsError("invalid_policy", "Policy rules and rate limits must be explicit arrays.");
@@ -78,6 +101,12 @@ export function evaluatePolicy(action: ApprovedAction, policy: WritePolicy = {},
       throw new ReceiptsError("invalid_policy", "Rate limits require a nonnegative write budget and a positive window in milliseconds.");
     }
   }
+}
+
+/** Policy evaluation creates no audit mutation. Budget is consumed only by durable dispatch. */
+export function evaluatePolicy(action: ApprovedAction, policy: WritePolicy = {}, entries: readonly AuditEntry[] = [], now = Date.now()): PolicyEvaluation {
+  getSurface(action.surface);
+  validatePolicy(policy);
   const block = policy.rules?.find((rule) => rule.effect === "block" && matchScope(rule, action));
   if (block) return { verdict: "policy_denied", ruleId: block.id };
   if (policy.defaultEffect === "block" && !policy.rules?.some((rule) => rule.effect === "allow" && matchScope(rule, action))) {
@@ -135,16 +164,25 @@ export class IdempotencyRegistry {
     return entry;
   }
 
-  claim(input: ApprovedAction): ClaimDecision {
+  /**
+   * Reserve an approved action. Without a policy the decision is purely about identity.
+   * With the host's policy, a forbidden write is refused before any reservation exists
+   * (one audited `policy_denied` record, no lease, no budget). Dispatch re-evaluates the
+   * same policy because shared budgets can be consumed between claim and dispatch; the
+   * dispatch check is the enforcement boundary, this one is early feedback.
+   */
+  claim(input: ApprovedAction): ClaimDecision;
+  claim(input: ApprovedAction, policy: WritePolicy): ClaimDecision | PolicyDeniedDecision;
+  claim(input: ApprovedAction, policy?: WritePolicy): ClaimDecision | PolicyDeniedDecision {
     const action = identity(input);
+    if (policy !== undefined) validatePolicy(policy);
     return this.#atomic((entries, now) => {
       const actionEntries = entries.filter((entry) => sameAction(entry, action));
       const current = currentLease(entries, action);
       let reason: "active_claim" | "completed" | "dispatched" | "approval_reused" | undefined;
       if (actionEntries.some((entry) => entry.event === "claim_completed" || entry.event === "binding")) reason = "completed";
       else if (actionEntries.some(isPossibleWrite)) reason = "dispatched";
-      else if (entries.some((entry) => entry.destinationAccount === action.destinationAccount && entry.approvalId === action.approvalId
-        && entry.actionId?.toLowerCase() !== action.actionId.toLowerCase() && (isPossibleWrite(entry) || entry.event === "claim"))) reason = "approval_reused";
+      else if (approvalConsumed(entries, action, now)) reason = "approval_reused";
       else if (current?.event === "claim" && Date.parse(current.registry!.expiresAt) > now) reason = "active_claim";
       if (reason) {
         // Refusal is a separate decision record, never an amendment to the
@@ -157,6 +195,15 @@ export class IdempotencyRegistry {
         recordAdmission(expired, this.store, entries.length);
         // Re-enter with the updated tail. A competitor may win the next append.
         throw new ReceiptsError("audit_conflict", "Lease expired; refresh the registry snapshot before reclaim.");
+      }
+      if (policy !== undefined) {
+        const result = evaluatePolicy(action, policy, entries, now);
+        if (result.verdict === "policy_denied") {
+          // Identity refusals above take precedence: an existing write must be reconciled
+          // regardless of policy. This denial holds no lease, so nothing needs releasing.
+          const entry = this.#entry(action, now, "policy_denied", result);
+          return { ...decision(recordAdmission(entry, this.store, entries.length)), verdict: "policy_denied" as const, ruleId: result.ruleId };
+        }
       }
       const lastFence = Math.max(0, ...actionEntries.map((entry) => entry.registry?.fence ?? 0));
       const claim: ClaimLease = { ...action, leaseId: randomUUID(), token: randomBytes(32).toString("hex"),
@@ -187,6 +234,13 @@ export class IdempotencyRegistry {
       throw new ReceiptsError("claim_expired", "The unused claim expired. Obtain a new fenced claim before dispatch.");
     }
     return current;
+  }
+
+  /** Read-only pre-check against the current durable snapshot. Records nothing and consumes no budget. */
+  evaluate(input: ApprovedAction, policy: WritePolicy = {}): PolicyEvaluation {
+    const action = identity(input);
+    validatePolicy(policy);
+    return this.#atomic((entries, now) => evaluatePolicy(action, policy, entries, now));
   }
 
   dispatch(lease: ClaimLease, policy: WritePolicy = {}): AdmissionDecision {
