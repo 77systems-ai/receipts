@@ -133,7 +133,9 @@ node packages/mcp-server/dist/cli.js
 
 Use an absolute path in your MCP client's configuration. Set `RECEIPTS_AUDIT_PATH` to a persistent local path shared by cooperating processes. Set `RECEIPTS_GITHUB_REPO` and a local token to enable independent GitHub reads.
 
-Six tools: `receipts.classify`, `receipts.record`, `receipts.bind`, `receipts.verify`, `receipts.observe`, and `receipts.recheck`. Caller evidence always uses the cooperative path. The last two tools use connectors configured locally at startup.
+Fourteen tools. Evidence: `receipts.classify`, `receipts.record`, `receipts.bind`, `receipts.verify`, `receipts.observe`, and `receipts.recheck`. Admission: `receipts.digest`, `receipts.policy`, `receipts.claim`, `receipts.dispatch`, `receipts.release`, and `receipts.complete`. Proof: `receipts.sign` and `receipts.badge`. Caller evidence always uses the cooperative path; observe and recheck use connectors configured locally at startup.
+
+An agent digests the exact approved payload, claims the action, dispatches immediately before its one outward write, then observes the destination; a matching independent read completes the lease, and the cooperative path completes it with `receipts.complete` after record and bind. Policy (`--policy FILE`), claim TTL (`--claim-ttl MS`), and the signing key (`--signing-key FILE`, PEM Ed25519) are host-owned startup configuration: no tool call can change them, and sign/badge refuse until a local key is configured. The MCP surface cannot force an agent to dispatch before writing; the SDK wrapper enforces that order in code.
 
 ```sh
 node packages/mcp-server/dist/cli.js --transport http --port 3100

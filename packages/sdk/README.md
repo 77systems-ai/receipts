@@ -22,7 +22,7 @@ const receipt = await receipts.execute({
 
 ## Action identity and uncertain writes
 
-Every execution requires an exact `destinationAccount`, a caller-generated UUID `actionId`, an explicit `approvalId`, and a unique `attemptId`. The same account and action cannot execute twice, even if a caller changes the attempt, provider idempotency key, or content. Reusing an approval for a new action on that account is also refused. A new action with a new approval may intentionally contain identical content; digest equality alone never blocks it. Persist and share these identifiers across every process handling an action.
+Every execution requires an exact `destinationAccount`, a caller-generated UUID `actionId`, an explicit `approvalId`, and a unique `attemptId`. The same account and action cannot execute twice, even if a caller changes the attempt, provider idempotency key, or content. Reusing an approval for a new action on that account is refused while the earlier action may have written or holds a live reservation; a released or expired unused reservation frees it. A new action with a new approval may intentionally contain identical content; digest equality alone never blocks it. Persist and share these identifiers across every process handling an action.
 
 The SDK atomically appends an uncertain claim before dispatch. A thrown callback becomes `delivery_unknown`; its raw error is never written to the audit. A normal callback return is not evidence either. An object ID in the write response cannot mint a receipt. The SDK never automatically retries a write.
 
@@ -64,10 +64,29 @@ The wrapper governs its own executor path. Application code that calls a provide
 
 ## v0.3 admission and policy
 
-`createReceipts({store,connector,policy?,claimTtlMs?})` uses core's atomic idempotency registry. It claims a reservation and then dispatches under policy; the dispatch append both consumes the rate budget and records uncertainty before the callback. A default client behaves as before, with additional audit events.
+`createReceipts({ store?, connector?, policy?, claimTtlMs? })` uses core's atomic idempotency registry. `execute` reserves the approved action, dispatches it under policy, and only then invokes the callback. The dispatch append both consumes the rate budget and records uncertainty before the callback. A default client behaves as before, with additional audit events.
 
-`policy` supports `{defaultEffect?:'allow'|'block',rules:[{id,effect,surface?,destinationAccount?}],rateLimits:[{id,maxWrites,windowMs,surface?,destinationAccount?}]}`. Omitted configuration is permissive within registered surfaces. Explicit blocks win. Rates count dispatched attempts in the sliding window, including uncertain writes, across clients sharing the store. Host code owns policy configuration; do not accept arbitrary policy overrides from an untrusted agent.
+`policy` supports `{defaultEffect?:'allow'|'block',rules:[{id,effect,surface?,destinationAccount?}],rateLimits:[{id,maxWrites,windowMs,surface?,destinationAccount?}]}`. Omitted configuration is permissive within registered surfaces. Explicit blocks win. Rates count dispatched attempts in the sliding window, including uncertain writes, across clients sharing the store. Host code owns policy configuration; do not accept arbitrary policy overrides from an untrusted agent. The client copies the policy at construction; a structurally invalid policy throws core's `invalid_policy` from `execute` before anything is recorded.
 
-A duplicate still throws `DuplicateWriteError`, now with `verdict: 'DUPLICATE'` and its persisted `decision`. A policy denial throws `PolicyDeniedError` with `verdict: 'policy_denied'`, `ruleId`, and `decision`; the callback is never invoked. The unused denied reservation is released, allowing a deliberate policy correction to proceed with the original approval. Unknown surfaces and audit failures still fail closed.
+Policy is evaluated twice on purpose:
 
-`client.registry` exposes local claim management for integrations that need it. Reservations default to 60 seconds. Expiry only recovers unused reservations; a dispatched write never becomes retryable because time passed. Successful read-back marks a leased action completed, including reconciliation by a newly created client after restart. Legacy v0.2 attempts without leases retain their original safe reconciliation path.
+1. **At claim (fail fast).** A forbidden write is refused before any reservation exists. The audit gains exactly one `policy_denied` record with no lease metadata and verdict `prewrite`. The callback is never invoked, no budget is consumed, the approval is not spent, and there is no reservation to release. `execute` throws `PolicyDeniedError`.
+2. **At dispatch (enforcement).** The same policy is re-evaluated against the current durable snapshot. A shared budget consumed between the two steps by another client or process is denied here: the audit shows `claim`, `policy_denied` carrying the lease metadata, and `claim_released`; the unused reservation is released and `execute` throws `PolicyDeniedError`. If the release fails because the reservation expired or a new owner reclaimed it (`claim_expired`, `stale_claim`), the named denial is still thrown; any other release failure propagates.
+
+Neither denial spends the approval, so a deliberate policy correction can authorize the same never-dispatched action with its original approval.
+
+`DuplicateWriteError` has `code: 'duplicate_write_refused'`, `verdict: 'DUPLICATE'`, and `decision`, the persisted admission decision with its `auditEntryId` and `reason` (`active_claim`, `completed`, `dispatched`, or `approval_reused`); the property is optional in the type and always supplied by `execute`. `PolicyDeniedError` has `code: 'policy_denied'`, `verdict: 'policy_denied'`, `ruleId`, and `decision` with the `auditEntryId` of the denial from whichever step refused. Both are thrown before the callback runs; no destination write was made. Unknown surfaces and audit failures still fail closed.
+
+```ts
+import { createReceipts, DuplicateWriteError, PolicyDeniedError } from "@77systems/receipts-sdk";
+
+try {
+  await receipts.execute(options);
+} catch (error) {
+  if (error instanceof PolicyDeniedError) console.log(error.ruleId, error.decision.auditEntryId);
+  else if (error instanceof DuplicateWriteError) console.log(error.decision?.reason); // Reconcile; do not execute again.
+  else throw error;
+}
+```
+
+`client.registry` exposes local claim management for integrations that need it. Reservations default to 60 seconds. Expiry only recovers unused reservations; a dispatched write never becomes retryable because time passed. An approval is spent by any other action on the same account that may have written or holds a live reservation; released or expired unused reservations free it, and refusal records never spend it. Successful read-back marks a leased action completed through core's `completeVerified`, including reconciliation by a newly created client after restart. Legacy v0.2 attempts without leases retain their original safe reconciliation path.

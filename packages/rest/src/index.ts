@@ -3,11 +3,17 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { AddressInfo } from 'node:net';
 import {
-  bind, classify, record, verify, getReceipt, observeDestination, ReceiptsError,
+  bind, classify, record, verify, getReceipt, observeDestination, describeError, ReceiptsError,
   type AuditEntry, type AuditStore, type OutwardWrite, type TrustedConnector, type ConnectorRequest, type ReceiptScope,
 } from '@77systems/receipts-core';
 
 class InputError extends Error {}
+
+/** Every envelope names a documented code; the hint and link come from the taxonomy, never from input. */
+function failure(code: string, message: string) {
+  const entry = describeError(code);
+  return { error: { code, message, ...(entry ? { hint: entry.fix, docs: entry.docs } : {}) } };
+}
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new InputError('Expected a JSON object.');
@@ -69,17 +75,15 @@ export function createReceiptsApp({ store, connectors = [] }: RestOptions = {}) 
     const origin = context.req.header('origin');
     if (!/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(host)
       || (origin !== undefined && origin !== `http://${host}`)) {
-      return context.json({ error: { code: 'forbidden_origin', message: 'Only same-origin loopback requests are accepted.' } }, 403);
+      return context.json(failure('forbidden_origin', 'Only same-origin loopback requests are accepted.'), 403);
     }
     await next();
   });
-  app.use('*', bodyLimit({ maxSize: 1024 * 1024, onError: (context) => context.json({
-    error: { code: 'body_too_large', message: 'Request body exceeds 1 MiB.' },
-  }, 413) }));
+  app.use('*', bodyLimit({ maxSize: 1024 * 1024, onError: (context) => context.json(failure('body_too_large', 'Request body exceeds 1 MiB.'), 413) }));
   app.use('*', async (context, next) => {
     if (context.req.method === 'POST'
       && context.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
-      return context.json({ error: { code: 'invalid_content_type', message: 'Content-Type must be application/json.' } }, 415);
+      return context.json(failure('invalid_content_type', 'Content-Type must be application/json.'), 415);
     }
     await next();
   });
@@ -110,13 +114,13 @@ export function createReceiptsApp({ store, connectors = [] }: RestOptions = {}) 
       return context.json(await observeDestination(connector,{...request,recheck},store));
     });
   }
-  app.notFound((context) => context.json({ error: { code: 'not_found', message: 'Use POST /classify, /record, /bind, /observe, /recheck or GET /verify.' } }, 404));
+  app.notFound((context) => context.json(failure('not_found', 'Use POST /classify, /record, /bind, /observe, /recheck or GET /verify.'), 404));
   app.onError((error, context) => {
     if (error instanceof SyntaxError || error instanceof InputError) {
-      return context.json({ error: { code: 'invalid_input', message: error instanceof SyntaxError ? 'Invalid JSON.' : error.message } }, 400);
+      return context.json(failure('invalid_input', error instanceof SyntaxError ? 'Invalid JSON.' : error.message), 400);
     }
-    if (error instanceof ReceiptsError) return context.json({ error: { code: error.code, message: error.message } }, 400);
-    return context.json({ error: { code: 'internal_error', message: 'Receipts could not complete the operation.' } }, 500);
+    if (error instanceof ReceiptsError) return context.json(failure(error.code, error.message), 400);
+    return context.json(failure('internal_error', 'Receipts could not complete the operation.'), 500);
   });
   return app;
 }

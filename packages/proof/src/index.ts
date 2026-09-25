@@ -1,5 +1,5 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from 'node:crypto';
-import { exportAuditChain, validateAuditChain, type AuditChain, type AuditEntry, type AuditStore, type Receipt } from '@77systems/receipts-core';
+import { exportAuditChain, validateAuditChain, ReceiptsError, type AuditChain, type AuditEntry, type AuditStore, type Receipt } from '@77systems/receipts-core';
 
 export const SIGNED_RECEIPT_FORMAT = 'receipts-signed/v1' as const;
 export interface SignedReceipt {
@@ -22,19 +22,19 @@ function canonical(value: unknown): string {
   if (value && typeof value === 'object' && [Object.prototype,null].includes(Object.getPrototypeOf(value))) {
     return `{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical((value as Record<string,unknown>)[key])}`).join(',')}}`;
   }
-  throw new Error('Invalid canonical value.');
+  throw new ReceiptsError('invalid_receipt', 'Invalid canonical value.');
 }
 function hash(value: string | Uint8Array): string { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
 function key(value: string | KeyObject): KeyObject {
   const result=typeof value==='string'?createPublicKey(value):value.type==='private'?createPublicKey(value):value;
-  if(result.asymmetricKeyType!=='ed25519'||result.type!=='public') throw new Error('An Ed25519 public key is required.');
+  if(result.asymmetricKeyType!=='ed25519'||result.type!=='public') throw new ReceiptsError('invalid_public_key', 'An Ed25519 public key is required.');
   return result;
 }
 function keyId(publicKey: KeyObject): string { return hash(publicKey.export({format:'der',type:'spki'})); }
 function receiptAt(entry: AuditEntry): Receipt {
-  if (!['binding','recheck','observation'].includes(entry.event) || !entry.destinationId || !entry.actionId || !entry.destinationAccount || !entry.approvalId || !entry.observedAt) throw new Error('An exact observed receipt is required.');
+  if (!['binding','recheck','observation'].includes(entry.event) || !entry.destinationId || !entry.actionId || !entry.destinationAccount || !entry.approvalId || !entry.observedAt) throw new ReceiptsError('invalid_receipt', 'An exact observed receipt is required.');
   const reference=entry.event==='binding'?entry.evidence.find(item=>item.source==='binding'&&item.destinationId===entry.destinationId&&item.packageDigest===entry.packageDigest)?.reference:entry.id;
-  if(!reference) throw new Error('Missing observation reference.');
+  if(!reference) throw new ReceiptsError('invalid_receipt', 'Missing observation reference.');
   return {
     destinationId:entry.destinationId,packageDigest:entry.packageDigest,surface:entry.surface,attemptId:entry.attemptId,
     actionId:entry.actionId,destinationAccount:entry.destinationAccount,approvalId:entry.approvalId,
@@ -47,7 +47,7 @@ function receiptAt(entry: AuditEntry): Receipt {
 function validateReceipt(receipt: Receipt, audit: AuditChain): void {
   validateAuditChain(audit);
   const entry=audit.envelopes.find(envelope=>envelope.entry.id===receipt.auditEntryId)?.entry;
-  if(!entry || canonical(receiptAt(entry))!==canonical(receipt)) throw new Error('The receipt does not match its audit entry.');
+  if(!entry || canonical(receiptAt(entry))!==canonical(receipt)) throw new ReceiptsError('receipt_audit_mismatch', 'The receipt does not match its audit entry.');
 }
 function signingBytes(proof: Omit<SignedReceipt,'signature'>): Buffer {
   return Buffer.from(canonical({format:proof.format,algorithm:proof.algorithm,receiptHash:proof.receiptHash,
@@ -65,7 +65,7 @@ export function signReceipt(receipt: Receipt, options: {store:AuditStore;private
   const audit=exportAuditChain(options.store);
   validateReceipt(receipt,audit);
   const privateKey=typeof options.privateKey==='string'?createPrivateKey(options.privateKey):options.privateKey;
-  if(privateKey.type!=='private'||privateKey.asymmetricKeyType!=='ed25519') throw new Error('An Ed25519 private key is required.');
+  if(privateKey.type!=='private'||privateKey.asymmetricKeyType!=='ed25519') throw new ReceiptsError('invalid_signing_key', 'An Ed25519 private key is required.');
   const publicKey=key(privateKey);
   const unsigned:Omit<SignedReceipt,'signature'>={format:SIGNED_RECEIPT_FORMAT,algorithm:'Ed25519',receipt:JSON.parse(canonical(receipt)) as Receipt,
     receiptHash:hash(canonical(receipt)),audit,signer:{keyId:keyId(publicKey),publicKey:publicKey.export({type:'spki',format:'pem'}).toString()},signedAt:new Date().toISOString()};
@@ -93,14 +93,14 @@ function escape(value: string): string { return value.replaceAll('&','&amp;').re
 /** Static, accessible HTML: no scripts, remote images, tracking, or verification requests. */
 export function renderReceiptBadge(proof: unknown, options: {trustedPublicKey:string|KeyObject;receiptUrl?:string}): string {
   const result=verifySignedReceipt(proof,options);
-  if(!result.valid||result.receipt.verdict!=='complete'||!result.receipt.independentlyVerified) throw new Error('A valid independently verified complete receipt is required.');
+  if(!result.valid||result.receipt.verdict!=='complete'||!result.receipt.independentlyVerified) throw new ReceiptsError('badge_requires_independent_completion', 'A valid independently verified complete receipt is required.');
   const short=result.receiptHash.slice('sha256:'.length, 'sha256:'.length+12);
   const attributes=`class="receipts-badge" data-receipts-format="${SIGNED_RECEIPT_FORMAT}" data-receipt-hash="${escape(result.receiptHash)}" data-signer-key="${escape(result.keyId)}" data-evidence-source="receipts-read"`;
   const content=`Verified by Receipts · independently verified · receipt #${short}`;
   const title=`Observed at ${result.receipt.observedAt}. Locally signed by ${result.keyId}. This badge records a historical observation.`;
   if(options.receiptUrl!==undefined) {
     const url=new URL(options.receiptUrl);
-    if(url.protocol!=='https:'||url.username||url.password) throw new Error('Badge receipt links must use HTTPS without credentials.');
+    if(url.protocol!=='https:'||url.username||url.password) throw new ReceiptsError('invalid_receipt_url', 'Badge receipt links must use HTTPS without credentials.');
     return `<a ${attributes} href="${escape(url.href)}" rel="noopener noreferrer" title="${escape(title)}">${content}</a>`;
   }
   return `<span ${attributes} role="img" aria-label="${escape(content)}" title="${escape(title)}">${content}</span>`;

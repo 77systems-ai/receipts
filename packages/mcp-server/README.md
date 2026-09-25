@@ -1,6 +1,6 @@
 # Receipts MCP
 
-**Verification for every AI agent.** Six tools expose the Receipts core over stdio or Streamable HTTP. Node.js 20+; MIT.
+**Verification for every AI agent.** Fourteen tools expose the Receipts core over stdio or Streamable HTTP: evidence, write admission, and signed proofs. Node.js 20+; MIT.
 
 ## Run
 
@@ -33,27 +33,81 @@ A stdio client configuration after publication:
 
 Before publication, replace the command with `node` and the arguments with the absolute path to `packages/mcp-server/dist/cli.js` in your checkout.
 
-| Flag | Default | Effect |
-| --- | --- | --- |
-| `--transport stdio\|http` | `stdio` | Choose the MCP transport. |
-| `--port NUMBER` | `3100` | HTTP port, 1–65535. |
-| `--audit-path FILE` | Core default | Override `RECEIPTS_AUDIT_PATH`. |
-| `--help` | | Print usage and exit. |
+## Configuration
+
+| Flag | Environment variable | Default | Effect |
+| --- | --- | --- | --- |
+| `--transport stdio\|http` | | `stdio` | Choose the MCP transport. |
+| `--port NUMBER` | | `3100` | HTTP port, 1–65535. |
+| `--audit-path FILE` | `RECEIPTS_AUDIT_PATH` | Core default | Append-only audit JSONL shared by cooperating processes. |
+| `--policy FILE` | `RECEIPTS_POLICY_PATH` | Permit registered surfaces | JSON `WritePolicy` applied at claim and dispatch. |
+| `--claim-ttl MS` | `RECEIPTS_CLAIM_TTL_MS` | Core registry default | TTL for unused reservations, 1 ms to 30 days. |
+| `--signing-key FILE` | `RECEIPTS_SIGNING_KEY_PATH` | Signing disabled | PEM PKCS8 Ed25519 private key for `receipts.sign` and `receipts.badge`. |
+| `--help` | | | Print usage and exit. |
+| | `RECEIPTS_GITHUB_REPO`, `GITHUB_TOKEN` or `GH_TOKEN` | | Enable the GitHub issues connector for `receipts.observe` and `receipts.recheck`. |
+
+Flags override environment variables. Files are read once at startup: the policy is parsed and validated, the key is loaded and checked for the Ed25519 type. Any failure writes a `startup_failed` JSON error to stderr and exits nonzero; the message names the path and the failure, never the file contents. A key file readable by other users produces a warning on stderr.
 
 The default audit file is `.receipts/audit.jsonl`, relative to the process working directory. Use an absolute `RECEIPTS_AUDIT_PATH` to share the same audit between clients. The core also maintains `.head` and transient `.lock` sidecars; keep these with the log.
 
-Streamable HTTP listens at `http://127.0.0.1:3100/mcp`. It uses stateless requests and JSON responses; audit records persist in the store. GET/SSE sessions are not used. The local server has no authentication and deliberately has no remote bind flag. A remote deployment needs a separately operated authenticated gateway and a trusted evidence producer. Host and Origin checks protect the local endpoint from browser-origin misuse; they do not authenticate local clients.
+A policy file:
+
+```json
+{
+  "defaultEffect": "allow",
+  "rules": [
+    { "id": "blocked-repository", "effect": "block", "destinationAccount": "github:owner/restricted" }
+  ],
+  "rateLimits": [
+    { "id": "issues-per-hour", "surface": "github-issue", "maxWrites": 10, "windowMs": 3600000 }
+  ]
+}
+```
+
+Explicit block rules win. `defaultEffect: "block"` turns the allow rules into an allow-list. Rate budgets count durable dispatches, including uncertain ones, across every client sharing the audit; policy denials consume no budget. Rule IDs are opaque identifiers and appear in audit entries and tool results.
+
+Generate a signing key locally. The private key is written with mode 0600 and never printed; only the public key and its ID are shown:
+
+```sh
+node --input-type=module -e "import {writeFileSync} from 'node:fs'; import {generateReceiptKeyPair} from '@77systems/receipts-proof'; const key = generateReceiptKeyPair(); writeFileSync(process.argv[1], key.privateKey, {mode: 0o600, flag: 'wx'}); console.log(key.publicKey); console.log('keyId', key.keyId);" /absolute/path/receipts-signing.pem
+```
+
+Distribute the public key and `keyId` to verifiers through a channel you trust separately; a proof carries its own public key only for identification.
+
+Streamable HTTP listens at `http://127.0.0.1:3100/mcp`. It uses stateless requests and JSON responses; audit records persist in the store, and policy, TTL, and key configuration are shared by every request. GET/SSE sessions are not used. The local server has no authentication and deliberately has no remote bind flag. A remote deployment needs a separately operated authenticated gateway and a trusted evidence producer. Host and Origin checks protect the local endpoint from browser-origin misuse; they do not authenticate local clients.
 
 ## Tools
 
-| Tool | Arguments | Result |
-| --- | --- | --- |
-| `receipts.classify` | `{ "write": OutwardWrite }` | Verdict, retry law, and permission booleans. |
-| `receipts.record` | `{ "entry": AuditEntry }` | `{ "recorded": true, "id": "…" }` |
-| `receipts.bind` | `{ "destinationId": "…", "packageDigest": "sha256:…" }` | Binding and its audit identifiers. |
-| `receipts.verify` | Same identity fields as bind, optional `scope`. | Historical receipt with provenance and observation time, or an unverified result. |
-| `receipts.observe` | `{ "request": ConnectorRequest }` | New independent observation and matching binding using a locally configured connector. |
-| `receipts.recheck` | Same request shape as observe. | Appended current observation; the original receipt is unchanged. |
+Evidence tools:
+
+| Tool | Arguments | Result | Refusals |
+| --- | --- | --- | --- |
+| `receipts.classify` | `{ "write": OutwardWrite }` | Verdict, retry law, and permission booleans. | `not_a_destination_write`, `invalid_entry` |
+| `receipts.record` | `{ "entry": AuditEntry }` | `{ "recorded": true, "id": "…" }` | `action_identity_required`, `invalid_entry`, `protected_admission` |
+| `receipts.bind` | `{ "destinationId", "packageDigest", "scope"? }` | Binding and its audit identifiers. | `observation_required`, `ambiguous_destination` |
+| `receipts.verify` | Same identity fields as bind. | Historical receipt with provenance and observation time, or an unverified result. | `ambiguous_destination` |
+| `receipts.observe` | `{ "request": ConnectorRequest }` | New independent observation and matching binding using a locally configured connector, plus `admission` when a dispatched lease completes. | `connector_not_configured`, `connector_read_failed`, `account_mismatch`, `object_mismatch` |
+| `receipts.recheck` | Same request shape as observe. | Appended current observation; the original receipt is unchanged. | As observe, plus `observation_required` without a prior receipt |
+
+Admission tools:
+
+| Tool | Arguments | Result | Refusals |
+| --- | --- | --- | --- |
+| `receipts.digest` | `{ "payload": any JSON value }` | `{ "packageDigest": "sha256:…", "encoding": "receipts-json-v1" }` | `invalid_payload` |
+| `receipts.policy` | `{ "action": ApprovedAction }` | `{ "verdict": "allowed" \| "policy_denied", "ruleId"?, "policyConfigured" }` | `not_a_destination_write`, `invalid_entry` |
+| `receipts.claim` | `{ "action": ApprovedAction }` | `CLAIMED` with `claim` (the lease, including its token), `DUPLICATE` with `reason`, or `policy_denied` with `ruleId`; each with `auditEntryId`. | `not_a_destination_write`, `invalid_entry`, `audit_busy` |
+| `receipts.dispatch` | `{ "claim": ClaimLease }` | `AUTHORIZED` or `policy_denied` with `ruleId`. | `stale_claim`, `claim_dispatched`, `claim_expired` |
+| `receipts.release` | `{ "claim": ClaimLease }` | `RELEASED`. | `stale_claim`, `claim_dispatched`, `claim_expired` |
+| `receipts.complete` | `{ "action": ApprovedAction, "destinationId" }` | `COMPLETED`. | `stale_claim`, `claim_not_dispatched`, `observation_required`, `object_mismatch` |
+
+Proof tools:
+
+| Tool | Arguments | Result | Refusals |
+| --- | --- | --- | --- |
+| `receipts.sign` | `{ "destinationId", "packageDigest", "scope"? }` | Signed proof: receipt, receipt hash, full audit snapshot, signer key ID and public key, signing time, signature. | `receipt_not_found`, `signing_key_not_configured`, `ambiguous_destination` |
+| `receipts.badge` | Same as sign, plus `receiptUrl`? | `{ "badge": "<a…>" \| "<span…>", "receiptHash", "keyId", "signedAt" }` | `receipt_not_found`, `badge_requires_independent_completion`, `signing_key_not_configured`, `invalid_receipt_url` |
+
+`ApprovedAction` is `{ surface, attemptId, actionId, destinationAccount, approvalId, packageDigest, idempotencyKey? }`: the caller's UUID action, exact account, explicit approval, and the digest from `receipts.digest`. `ClaimLease` is the `claim` object returned by `receipts.claim`, passed back unchanged. These are wire shapes; identity, fencing, and policy semantics belong to the core registry.
 
 For example, call `receipts.classify` with:
 
@@ -68,13 +122,33 @@ For example, call `receipts.classify` with:
 }
 ```
 
-This deliberately fictional digest is for demonstration. The result is `delivery_unknown`, with `mayAutoRetry`, `maySecondWrite`, and `mayRearm` all false. In a real integration, compute the digest from the exact approved payload with the SDK.
+This deliberately fictional digest is for demonstration. The result is `delivery_unknown`, with `mayAutoRetry`, `maySecondWrite`, and `mayRearm` all false. In a real integration, compute the digest from the exact approved payload with `receipts.digest` or the SDK.
+
+## Guarded write sequence
+
+1. `receipts.digest` with the exact approved payload, once. Every later call takes the digest, never the content.
+2. `receipts.policy` (optional) for early feedback. `allowed` is not a reservation.
+3. `receipts.claim` with the approved action. `DUPLICATE` means an execution already exists for this account and action, or the approval is spent: reconcile with `receipts.observe`; never write again. `policy_denied` reserves nothing; stop and report the rule.
+4. `receipts.dispatch` with the returned claim, immediately before the write. `AUTHORIZED` durably records that the write may happen and consumes the shared budget. `policy_denied` means the budget moved between claim and dispatch: call `receipts.release` and stop.
+5. Perform exactly one outward write with your own tool. Never dispatch the same claim twice. A crash after dispatch is uncertain until the destination is read back; the lease never expires into another write.
+6. `receipts.observe` with the real locator or object ID. A matching independent read binds the object and completes the lease, returning `admission.verdict: "COMPLETED"`. Without a connector, `receipts.record` the observation, `receipts.bind`, then `receipts.complete`.
+7. `receipts.sign` or `receipts.badge` when a shareable proof is required and a key is configured.
 
 `classify` evaluates supplied evidence without I/O. `record` always labels caller observations host-supplied with independentlyVerified false, including forged provider/trust flags. `bind` requires an audited exact object/package observation and inherits its provenance. `verify` inspects history without refreshing it.
 
-`observe` and `recheck` use trusted executable connectors installed locally at startup. Set `RECEIPTS_GITHUB_REPO=owner/repo` and a local GITHUB_TOKEN or GH_TOKEN to enable GitHub. Request fields are surface, attemptId, actionId (UUID), destinationAccount, approvalId, packageDigest, and either destinationId or locator (GitHub: `{issueNumber:42}`). Credentials never appear in tool arguments or audit entries. New record entries also require action/account/approval identity.
+`observe` and `recheck` use trusted executable connectors installed locally at startup. Set `RECEIPTS_GITHUB_REPO=owner/repo` and a local GITHUB_TOKEN or GH_TOKEN to enable GitHub. Request fields are surface, attemptId, actionId (UUID), destinationAccount, approvalId, packageDigest, and either destinationId or locator (GitHub: `{issueNumber:42}`). Credentials never appear in tool arguments or audit entries. New record entries also require action/account/approval identity. When the request's attempt was dispatched through `receipts.dispatch`, a complete read also completes that lease; attempts without a lease are returned unchanged and gain no invented admission decision.
 
-A programmatic server can pass `{store,connectors:[connector]}`. A remote caller cannot install connectors or supply a read result. A changed-content read is independently observed but remains package_unverified. `bind`/`verify` accept an optional scope with account/action/surface/attempt to disambiguate historical records.
+`receipts.complete` needs no token: the audited dispatch and binding are its authority, so recovery works after a restart. `receipts.badge` renders only independently verified complete receipts; cooperative receipts can be signed, and the proof shows `host-supplied`.
+
+A programmatic server can pass `{ store, connectors, policy, claimTtlMs, signingKey }`. A remote caller cannot install connectors, supply a read result, or change the policy. A changed-content read is independently observed but remains package_unverified. `bind`/`verify`/`sign`/`badge` accept an optional scope with account/action/surface/attempt to disambiguate historical records.
+
+## Security notes
+
+- The lease token returned by `receipts.claim` is the caller's authority for dispatch and release. Only its hash is audited. Keep it out of evidence, reports, logs, and shared context.
+- Policy, claim TTL, and the signing key are host-owned startup configuration. No tool call can read or change them; `receipts.policy` only reports the decision for one action.
+- The server records that a write was authorized. It cannot prove that the write was performed, or performed once, after dispatch: only a destination read can. Wire tools cannot force an agent to dispatch before writing; the SDK wrapper enforces the order in code.
+- A signed proof embeds the full local audit snapshot and attests this server's local key, not the provider. Verifiers need the public key from a separately trusted source. Review a proof before sharing it.
+- Hosted deployments need a separately secured gateway. This server authenticates nobody.
 
 Run `node packages/mcp-server/dist/doctor.js doctor`, or the installed `receipts doctor`, to check Node, actual MCP boot, all tools, and credential presence. It makes no destination request and never prints token values.
 Failures from core return `isError: true` with `{ "error": { "code": "…", "message": "…" } }` as text and structured content. Invalid tool argument shapes produce an MCP input-validation error. Unknown surfaces return `not_a_destination_write`; there is no fifth verdict. HTTP rejects invalid content types, bodies over 1 MiB, invalid JSON, foreign Host headers, and cross-origin requests. Startup failures write a JSON error to stderr and exit nonzero. Stdout is reserved for MCP in stdio mode.
@@ -88,4 +162,4 @@ npm run build
 npm test --workspace @77systems/receipts-mcp
 ```
 
-Tests use official MCP clients against both a real stdio subprocess and a local HTTP listener, including an uncertain write resolved by observation and binding. Transport implementation follows the [official TypeScript SDK server guide](https://ts.sdk.modelcontextprotocol.io/server).
+Tests use official MCP clients against both a real stdio subprocess and a local HTTP listener, including an uncertain write resolved by observation and binding, guarded claim/dispatch/complete flows with duplicate, forged-token, and budget refusals, policy and signing-key configuration through CLI flags, and offline verification of signed proofs. Transport implementation follows the [official TypeScript SDK server guide](https://ts.sdk.modelcontextprotocol.io/server).

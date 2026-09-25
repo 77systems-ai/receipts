@@ -34,6 +34,26 @@
           "description": "Local GitHub token authorized to read the configured repository. Sent only to the GitHub API for authentication.",
           "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "RECEIPTS_POLICY_PATH",
+          "description": "Path to a local JSON WritePolicy applied at claim and dispatch. Host-owned startup configuration; no tool call can change it. Omit to permit registered surfaces.",
+          "format": "filepath",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RECEIPTS_CLAIM_TTL_MS",
+          "description": "Positive integer TTL in milliseconds for unused claims. Dispatched claims never expire into another write. Defaults to the core registry default.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RECEIPTS_SIGNING_KEY_PATH",
+          "description": "Path to a local 0600 PEM PKCS8 Ed25519 private key whose contents never leave the machine. Enables receipts.sign and receipts.badge; omit to keep signing disabled.",
+          "format": "filepath",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }

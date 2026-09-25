@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,18 +10,49 @@ import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createAuditEntry, JsonlAuditStore } from '@77systems/receipts-core';
-import { startHttpServer } from '../dist/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createAuditEntry, JsonlAuditStore, MemoryAuditStore, type ApprovedAction, type ClaimLease } from '@77systems/receipts-core';
+import { digestPayload } from '@77systems/receipts-sdk';
+import { generateReceiptKeyPair, verifySignedReceipt } from '@77systems/receipts-proof';
+import { createReceiptsServer, startHttpServer } from '../dist/index.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 const write = { surface: 'social-publish', attemptId: 'attempt-1', actionId: '00000000-0000-4000-8000-000000000001', destinationAccount: 'demo:account', approvalId: 'approval-1', packageDigest: digest, writeMayHaveHappened: true };
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+const approvedPayload = { title: 'Approved title', body: 'Exact approved body' };
+const approvedDigest = digestPayload(approvedPayload);
+const TOOL_NAMES = [
+  'receipts.badge', 'receipts.bind', 'receipts.claim', 'receipts.classify', 'receipts.complete', 'receipts.digest', 'receipts.dispatch',
+  'receipts.observe', 'receipts.policy', 'receipts.recheck', 'receipts.record', 'receipts.release', 'receipts.sign', 'receipts.verify',
+];
+type ToolResult = Awaited<ReturnType<Client['callTool']>>;
+
+function nextAction(overrides: Partial<ApprovedAction> = {}): ApprovedAction {
+  return { surface: write.surface, attemptId: randomUUID(), actionId: randomUUID(), destinationAccount: write.destinationAccount,
+    approvalId: randomUUID(), packageDigest: approvedDigest, ...overrides };
+}
+function code(response: ToolResult): string | undefined {
+  return (response.structuredContent?.error as { code?: string } | undefined)?.code;
+}
+const errorCode = (expected: string) => (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === expected;
+function observationEntry(action: ApprovedAction, destinationId: string, source: 'provider' | 'human' = 'human') {
+  return createAuditEntry({ ...action, destinationId, publicObjectExists: true, writeMayHaveHappened: false,
+    evidence: [{ source, detail: 'Test fixture: authenticated read-back matched approved payload.', destinationId, packageDigest: action.packageDigest }] }, 'observation');
+}
+async function claimLease(client: Client, action: ApprovedAction): Promise<ClaimLease> {
+  const claimed = await client.callTool({ name: 'receipts.claim', arguments: { action } });
+  assert.equal(claimed.isError, undefined, JSON.stringify(claimed.structuredContent));
+  assert.equal(claimed.structuredContent?.verdict, 'CLAIMED');
+  const claim = claimed.structuredContent?.claim as ClaimLease;
+  assert.match(claim.token, /^[0-9a-f]{64}$/, 'the lease token is returned only to the caller');
+  assert.equal(claim.actionId, action.actionId);
+  return claim;
+}
 
 async function exercise(client: Client) {
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(({ name }) => name).sort(), [
-    'receipts.bind', 'receipts.classify', 'receipts.observe', 'receipts.recheck', 'receipts.record', 'receipts.verify',
-  ]);
+  assert.deepEqual(listed.tools.map(({ name }) => name).sort(), TOOL_NAMES);
+  assert.ok(listed.tools.every((tool) => typeof tool.title === 'string' && tool.title.length > 0), 'every tool carries a short title');
   const classification = await client.callTool({ name: 'receipts.classify', arguments: { write } });
   assert.equal(classification.structuredContent?.verdict, 'delivery_unknown');
   assert.equal(classification.structuredContent?.mayAutoRetry, false);
@@ -51,9 +83,52 @@ async function exercise(client: Client) {
   assert.equal((unknown.structuredContent?.error as { code: string }).code, 'not_a_destination_write');
   const malformed = await client.callTool({ name: 'receipts.classify', arguments: { write: { surface: 123 } } });
   assert.equal(malformed.isError, true);
+  // The digest of the exact approved payload is computed once; the content itself never appears in a result.
+  const digested = await client.callTool({ name: 'receipts.digest', arguments: { payload: approvedPayload } });
+  assert.equal(digested.isError, undefined);
+  assert.equal(digested.structuredContent?.packageDigest, approvedDigest);
+  assert.equal(digested.structuredContent?.encoding, 'receipts-json-v1');
+  assert.ok(!JSON.stringify(digested).includes(approvedPayload.body));
+  const evaluated = await client.callTool({ name: 'receipts.policy', arguments: { action: nextAction() } });
+  assert.deepEqual(evaluated.structuredContent, { verdict: 'allowed', policyConfigured: false });
 }
 
-test('stdio boots, lists exactly six tools, and reconciles without another write', { timeout: 20000 }, async () => {
+/** Cooperative guarded write over a real MCP client. Returns the lease token so callers can prove it was never persisted. */
+async function guardedCooperativeWrite(client: Client): Promise<string> {
+  const action = nextAction();
+  const destinationId = `post-${action.attemptId}`;
+  const claim = await claimLease(client, action);
+  assert.equal(claim.fence, 1);
+  const early = await client.callTool({ name: 'receipts.complete', arguments: { action, destinationId } });
+  assert.equal(code(early), 'claim_not_dispatched', 'completion needs a durable dispatch first');
+  const forged = await client.callTool({ name: 'receipts.dispatch', arguments: { claim: { ...claim, token: 'f'.repeat(64) } } });
+  assert.equal(forged.isError, true);
+  assert.equal(code(forged), 'stale_claim', 'a forged token cannot dispatch');
+  const dispatched = await client.callTool({ name: 'receipts.dispatch', arguments: { claim } });
+  assert.equal(dispatched.isError, undefined, JSON.stringify(dispatched.structuredContent));
+  assert.equal(dispatched.structuredContent?.verdict, 'AUTHORIZED');
+  const twice = await client.callTool({ name: 'receipts.dispatch', arguments: { claim } });
+  assert.equal(code(twice), 'claim_dispatched', 'the same claim never dispatches twice');
+  const unbound = await client.callTool({ name: 'receipts.complete', arguments: { action, destinationId } });
+  assert.equal(code(unbound), 'observation_required', 'completion needs an audited binding');
+  assert.equal((await client.callTool({ name: 'receipts.record', arguments: { entry: observationEntry(action, destinationId) } })).isError, undefined);
+  const bound = await client.callTool({ name: 'receipts.bind', arguments: { destinationId, packageDigest: action.packageDigest, scope: { actionId: action.actionId, destinationAccount: action.destinationAccount } } });
+  assert.equal(bound.isError, undefined);
+  assert.equal(bound.structuredContent?.independentlyVerified, false);
+  const completed = await client.callTool({ name: 'receipts.complete', arguments: { action, destinationId } });
+  assert.equal(completed.isError, undefined, JSON.stringify(completed.structuredContent));
+  assert.equal(completed.structuredContent?.verdict, 'COMPLETED');
+  const again = await client.callTool({ name: 'receipts.complete', arguments: { action, destinationId } });
+  assert.equal(again.structuredContent?.verdict, 'COMPLETED', 'completion is idempotent without a token');
+  const duplicate = await client.callTool({ name: 'receipts.claim', arguments: { action: { ...action, attemptId: randomUUID() } } });
+  assert.equal(duplicate.structuredContent?.verdict, 'DUPLICATE');
+  assert.equal(duplicate.structuredContent?.reason, 'completed');
+  const released = await client.callTool({ name: 'receipts.release', arguments: { claim } });
+  assert.equal(code(released), 'claim_dispatched', 'a dispatched claim is never released');
+  return claim.token;
+}
+
+test('stdio boots, lists exactly fourteen tools, and reconciles a guarded write without another write', { timeout: 20000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'receipts-mcp-stdio-'));
   const client = new Client({ name: 'receipts-test', version: '1.0.0' });
   const transport = new StdioClientTransport({
@@ -66,6 +141,12 @@ test('stdio boots, lists exactly six tools, and reconciles without another write
     await client.connect(transport);
     await exercise(client);
     assert.equal(new JsonlAuditStore(join(directory, 'audit.jsonl')).read().length, 3);
+    const token = await guardedCooperativeWrite(client);
+    const entries = new JsonlAuditStore(join(directory, 'audit.jsonl')).read();
+    assert.deepEqual(entries.slice(3).map((entry) => entry.event), ['claim', 'attempt', 'observation', 'binding', 'claim_completed', 'duplicate']);
+    assert.equal(entries.filter((entry) => entry.event === 'attempt').length, 1);
+    const persisted = await readFile(join(directory, 'audit.jsonl'), 'utf8');
+    assert.ok(!persisted.includes(token), 'the lease token is only hashed in the audit');
   } finally {
     await client.close();
     await rm(directory, { recursive: true, force: true });
@@ -79,6 +160,11 @@ test('Streamable HTTP performs real MCP calls and protects the local endpoint', 
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL(running.url)));
     await exercise(client);
+    const token = await guardedCooperativeWrite(client);
+    assert.ok(!(await readFile(join(directory, 'audit.jsonl'), 'utf8')).includes(token));
+    const unsigned = await client.callTool({ name: 'receipts.sign', arguments: { destinationId: 'post-123', packageDigest: digest } });
+    assert.equal(unsigned.isError, true);
+    assert.equal(code(unsigned), 'signing_key_not_configured', 'signing is opt-in');
     const crossOrigin = await fetch(running.url, { method: 'POST', headers: { origin: 'https://attacker.example', 'content-type': 'application/json' }, body: '{}' });
     assert.equal(crossOrigin.status, 403);
     const wrongHostStatus = await new Promise<number | undefined>((resolve, reject) => {
@@ -104,10 +190,51 @@ test('CLI documents supported transports and rejects remote binding and invalid 
   const help = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /stdio\|http/);
+  for (const flag of ['--policy FILE', '--claim-ttl MS', '--signing-key FILE', 'RECEIPTS_POLICY_PATH', 'RECEIPTS_CLAIM_TTL_MS', 'RECEIPTS_SIGNING_KEY_PATH']) {
+    assert.ok(help.stdout.includes(flag), `help mentions ${flag}`);
+  }
   for (const args of [['--host', '0.0.0.0'], ['--port', '65536'], ['--transport', 'sse']]) {
     const invalid = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8' });
     assert.equal(invalid.status, 1);
     assert.equal(JSON.parse(invalid.stderr).error.code, 'startup_failed');
+  }
+});
+
+test('CLI fails closed on invalid policy, signing key, and TTL configuration without echoing file contents', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'receipts-cli-config-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const brokenPolicy = join(directory, 'broken.json');
+  await writeFile(brokenPolicy, '{ not json POLICY-FILE-SECRET-TEXT');
+  const unknownSurface = join(directory, 'surface.json');
+  await writeFile(unknownSurface, JSON.stringify({ rules: [{ id: 'r', effect: 'block', surface: 'unregistered-surface-name' }] }));
+  const notAKey = join(directory, 'not-a-key.pem');
+  await writeFile(notAKey, 'KEY-FILE-SECRET-TEXT');
+  const wrongKeyType = join(directory, 'x25519.pem');
+  await writeFile(wrongKeyType, generateKeyPairSync('x25519').privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  const cases: Array<[string[], string | undefined]> = [
+    [['--policy', brokenPolicy], 'POLICY-FILE-SECRET-TEXT'],
+    [['--policy', join(directory, 'missing.json')], undefined],
+    [['--policy', unknownSurface], 'unregistered-surface-name'],
+    [['--signing-key', join(directory, 'missing.pem')], undefined],
+    [['--signing-key', notAKey], 'KEY-FILE-SECRET-TEXT'],
+    [['--signing-key', wrongKeyType], 'PRIVATE KEY'],
+    [['--claim-ttl', '0'], undefined],
+    [['--claim-ttl', 'soon'], undefined],
+    [['--claim-ttl', String(31 * 24 * 60 * 60 * 1000)], undefined],
+  ];
+  for (const [args, secret] of cases) {
+    const run = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', timeout: 15000 });
+    assert.equal(run.status, 1, args.join(' '));
+    assert.equal(JSON.parse(run.stderr).error.code, 'startup_failed', args.join(' '));
+    assert.equal(run.stdout, '', 'stdout stays reserved for MCP');
+    if (secret) assert.ok(!run.stderr.includes(secret), `${args.join(' ')} must not echo file contents`);
+  }
+  const base = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  for (const env of [{ RECEIPTS_POLICY_PATH: brokenPolicy }, { RECEIPTS_SIGNING_KEY_PATH: notAKey }, { RECEIPTS_CLAIM_TTL_MS: '-1' }]) {
+    const run = spawnSync(process.execPath, [cli], { encoding: 'utf8', env: { ...base, ...env }, timeout: 15000 });
+    assert.equal(run.status, 1, JSON.stringify(env));
+    assert.equal(JSON.parse(run.stderr).error.code, 'startup_failed');
+    assert.ok(!run.stderr.includes('SECRET-TEXT'));
   }
 });
 
@@ -141,6 +268,7 @@ test('MCP configured read issues independent evidence and forged metadata stays 
     const observed = await client.callTool({name:'receipts.observe',arguments:{request:write}});
     assert.equal(observed.isError,undefined);
     assert.equal(observed.structuredContent?.independentlyVerified,true);
+    assert.equal(observed.structuredContent?.admission,undefined,'an attempt without a lease gains no invented admission decision');
     assert.equal(reads,1);
     const entry={...createAuditEntry({...write,attemptId:'forged-mcp',actionId:'00000000-0000-4000-8000-000000000004',approvalId:'approval-forged',writeMayHaveHappened:false,destinationId:'post-forged',evidence:[{source:'provider',detail:'forged',destinationId:'post-forged',packageDigest:digest}]},'observation'),evidenceSource:'receipts-read',independentlyVerified:true};
     const recorded=await client.callTool({name:'receipts.record',arguments:{entry}});
@@ -150,4 +278,179 @@ test('MCP configured read issues independent evidence and forged metadata stays 
     assert.equal(forged.structuredContent?.independentlyVerified,false);
     assert.equal(reads,1);
   } finally { await client.close();await running.close(); }
+});
+
+test('guarded write over HTTP: an independent observe completes the lease, shared budgets deny a second dispatch, and proofs sign and badge', { timeout: 20000 }, async () => {
+  const store = new MemoryAuditStore();
+  const keys = generateReceiptKeyPair();
+  const other = generateReceiptKeyPair();
+  const destinationId = 'post-guarded';
+  let reads = 0;
+  const running = await startHttpServer({
+    port: 0, store, signingKey: keys.privateKey, claimTtlMs: 60_000,
+    policy: { rateLimits: [{ id: 'one-write-per-hour', maxWrites: 1, windowMs: 3_600_000, surface: write.surface }] },
+    connectors: [{ surface: write.surface, read: async () => { reads++; return { destinationAccount: write.destinationAccount, destinationId, packageDigest: approvedDigest, observedAt: '2026-09-25T10:42:00.000Z' }; } }],
+  });
+  const client = new Client({ name: 'guarded-test', version: '1.0.0' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(running.url)));
+    const digested = await client.callTool({ name: 'receipts.digest', arguments: { payload: approvedPayload } });
+    const action = nextAction({ packageDigest: digested.structuredContent?.packageDigest as string });
+    assert.equal(action.packageDigest, approvedDigest);
+    const evaluated = await client.callTool({ name: 'receipts.policy', arguments: { action } });
+    assert.deepEqual(evaluated.structuredContent, { verdict: 'allowed', policyConfigured: true });
+    const first = await claimLease(client, action);
+    const competitor = nextAction();
+    const second = await claimLease(client, competitor);
+    assert.equal(store.read().filter((entry) => entry.event === 'claim').length, 2);
+    const dispatched = await client.callTool({ name: 'receipts.dispatch', arguments: { claim: first } });
+    assert.equal(dispatched.structuredContent?.verdict, 'AUTHORIZED');
+    // The shared budget is consumed by the durable dispatch, so the competitor is denied and can release.
+    const denied = await client.callTool({ name: 'receipts.dispatch', arguments: { claim: second } });
+    assert.equal(denied.isError, undefined);
+    assert.equal(denied.structuredContent?.verdict, 'policy_denied');
+    assert.equal(denied.structuredContent?.ruleId, 'one-write-per-hour');
+    const released = await client.callTool({ name: 'receipts.release', arguments: { claim: second } });
+    assert.equal(released.structuredContent?.verdict, 'RELEASED');
+    const before = store.read().length;
+    const exhausted = await client.callTool({ name: 'receipts.policy', arguments: { action: nextAction() } });
+    assert.deepEqual(exhausted.structuredContent, { verdict: 'policy_denied', ruleId: 'one-write-per-hour', policyConfigured: true });
+    assert.equal(store.read().length, before, 'policy evaluation records nothing');
+    const lateClaim = await client.callTool({ name: 'receipts.claim', arguments: { action: nextAction() } });
+    assert.equal(lateClaim.structuredContent?.verdict, 'policy_denied');
+    assert.equal(lateClaim.structuredContent?.claim, undefined, 'a denied claim holds no lease');
+    assert.equal(store.read().at(-1)!.registry, undefined, 'a claim-time denial is recorded without lease metadata');
+    // The one outward write is represented by the connector fixture. Observing it completes the lease.
+    const observed = await client.callTool({ name: 'receipts.observe', arguments: { request: { ...action, destinationId } } });
+    assert.equal(observed.isError, undefined, JSON.stringify(observed.structuredContent));
+    assert.equal(observed.structuredContent?.verdict, 'complete');
+    assert.equal(observed.structuredContent?.independentlyVerified, true);
+    assert.equal((observed.structuredContent?.admission as { verdict: string }).verdict, 'COMPLETED');
+    assert.equal(reads, 1);
+    const duplicate = await client.callTool({ name: 'receipts.claim', arguments: { action: { ...action, attemptId: randomUUID() } } });
+    assert.equal(duplicate.structuredContent?.verdict, 'DUPLICATE');
+    assert.equal(duplicate.structuredContent?.reason, 'completed');
+    assert.equal(store.read().filter((entry) => entry.event === 'attempt').length, 1);
+    const rechecked = await client.callTool({ name: 'receipts.recheck', arguments: { request: { ...action, destinationId } } });
+    assert.equal(rechecked.structuredContent?.verdict, 'complete');
+    assert.equal((rechecked.structuredContent?.admission as { verdict: string }).verdict, 'COMPLETED');
+    assert.equal(store.read().filter((entry) => entry.event === 'claim_completed').length, 1, 'recheck completion is idempotent');
+    assert.ok(!JSON.stringify(store.read()).includes(first.token));
+    const identity = { destinationId, packageDigest: approvedDigest, scope: { actionId: action.actionId, destinationAccount: action.destinationAccount } };
+    const signed = await client.callTool({ name: 'receipts.sign', arguments: identity });
+    assert.equal(signed.isError, undefined, JSON.stringify(signed.structuredContent));
+    const proof = signed.structuredContent as { receiptHash: string; signer: { keyId: string } };
+    assert.equal(verifySignedReceipt(proof, { trustedPublicKey: keys.publicKey }).valid, true);
+    assert.equal(verifySignedReceipt(proof, { trustedPublicKey: other.publicKey }).valid, false);
+    assert.equal(proof.signer.keyId, keys.keyId);
+    assert.ok(!JSON.stringify(proof).includes('PRIVATE KEY'));
+    assert.ok(!JSON.stringify(proof).includes(first.token));
+    const badge = await client.callTool({ name: 'receipts.badge', arguments: { ...identity, receiptUrl: 'https://example.com/receipts/1' } });
+    assert.equal(badge.isError, undefined, JSON.stringify(badge.structuredContent));
+    assert.match(badge.structuredContent?.badge as string, /^<a class="receipts-badge" .*Verified by Receipts · independently verified/);
+    assert.equal(badge.structuredContent?.receiptHash, proof.receiptHash);
+    assert.equal(badge.structuredContent?.keyId, keys.keyId);
+    assert.equal(typeof badge.structuredContent?.signedAt, 'string');
+    const insecure = await client.callTool({ name: 'receipts.badge', arguments: { ...identity, receiptUrl: 'http://example.com/receipts/1' } });
+    assert.equal(code(insecure), 'invalid_receipt_url');
+    assert.equal(code(await client.callTool({ name: 'receipts.badge', arguments: { ...identity, receiptUrl: 'https://user:secret@example.com/r' } })), 'invalid_receipt_url');
+    assert.equal(code(await client.callTool({ name: 'receipts.sign', arguments: { destinationId: 'post-never', packageDigest: approvedDigest } })), 'receipt_not_found');
+    // A cooperative receipt can be signed but never badged.
+    const cooperative = nextAction();
+    const cooperativeId = 'post-cooperative';
+    assert.equal((await client.callTool({ name: 'receipts.record', arguments: { entry: observationEntry(cooperative, cooperativeId) } })).isError, undefined);
+    assert.equal((await client.callTool({ name: 'receipts.bind', arguments: { destinationId: cooperativeId, packageDigest: approvedDigest } })).isError, undefined);
+    const refused = await client.callTool({ name: 'receipts.badge', arguments: { destinationId: cooperativeId, packageDigest: approvedDigest } });
+    assert.equal(code(refused), 'badge_requires_independent_completion');
+    const cooperativeProof = await client.callTool({ name: 'receipts.sign', arguments: { destinationId: cooperativeId, packageDigest: approvedDigest } });
+    assert.equal(cooperativeProof.isError, undefined);
+    assert.equal((cooperativeProof.structuredContent?.receipt as { independentlyVerified: boolean }).independentlyVerified, false);
+    assert.equal(verifySignedReceipt(cooperativeProof.structuredContent, { trustedPublicKey: keys.publicKey }).valid, true);
+  } finally { await client.close(); await running.close(); }
+});
+
+test('stdio applies a host policy file, claim TTL, and signing key from CLI flags', { timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'receipts-mcp-flags-'));
+  const keys = generateReceiptKeyPair();
+  const policyPath = join(directory, 'policy.json');
+  const keyPath = join(directory, 'signing.pem');
+  const auditPath = join(directory, 'audit.jsonl');
+  await writeFile(policyPath, JSON.stringify({ rules: [{ id: 'blocked-account', effect: 'block', destinationAccount: 'demo:blocked' }] }));
+  await writeFile(keyPath, keys.privateKey, { mode: 0o600 });
+  const client = new Client({ name: 'receipts-flags-test', version: '1.0.0' });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [cli, '--audit-path', auditPath, '--policy', policyPath, '--claim-ttl', '5000', '--signing-key', keyPath],
+    env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    stderr: 'pipe',
+  });
+  let stderr = '';
+  try {
+    await client.connect(transport);
+    transport.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    const blocked = nextAction({ destinationAccount: 'demo:blocked' });
+    const evaluated = await client.callTool({ name: 'receipts.policy', arguments: { action: blocked } });
+    assert.deepEqual(evaluated.structuredContent, { verdict: 'policy_denied', ruleId: 'blocked-account', policyConfigured: true });
+    const denied = await client.callTool({ name: 'receipts.claim', arguments: { action: blocked } });
+    assert.equal(denied.isError, undefined);
+    assert.equal(denied.structuredContent?.verdict, 'policy_denied');
+    assert.equal(denied.structuredContent?.ruleId, 'blocked-account');
+    assert.equal(denied.structuredContent?.claim, undefined);
+    const store = new JsonlAuditStore(auditPath);
+    assert.deepEqual(store.read().map((entry) => entry.event), ['policy_denied'], 'a denied claim leaves no claim entry');
+    assert.equal(store.read()[0]!.registry, undefined);
+    const allowed = nextAction();
+    const lease = await claimLease(client, allowed);
+    assert.ok(Date.parse(lease.expiresAt) - Date.now() <= 5000, 'the CLI TTL bounds unused reservations');
+    assert.equal((await client.callTool({ name: 'receipts.release', arguments: { claim: lease } })).structuredContent?.verdict, 'RELEASED');
+    const cooperative = nextAction();
+    const cooperativeId = 'post-flag-cooperative';
+    assert.equal((await client.callTool({ name: 'receipts.record', arguments: { entry: observationEntry(cooperative, cooperativeId) } })).isError, undefined);
+    assert.equal((await client.callTool({ name: 'receipts.bind', arguments: { destinationId: cooperativeId, packageDigest: approvedDigest } })).isError, undefined);
+    const signed = await client.callTool({ name: 'receipts.sign', arguments: { destinationId: cooperativeId, packageDigest: approvedDigest } });
+    assert.equal(signed.isError, undefined, JSON.stringify(signed.structuredContent));
+    assert.equal(verifySignedReceipt(signed.structuredContent, { trustedPublicKey: keys.publicKey }).valid, true);
+    assert.equal(verifySignedReceipt(signed.structuredContent, { trustedPublicKey: generateReceiptKeyPair().publicKey }).valid, false);
+    const persisted = await readFile(auditPath, 'utf8');
+    assert.ok(!persisted.includes(lease.token));
+    assert.ok(!persisted.includes('PRIVATE KEY'));
+    assert.ok(!stderr.includes('PRIVATE KEY'));
+    assert.ok(!stderr.includes('Warning'), 'a 0600 key file produces no permission warning');
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('digest refuses non-JSON payloads with a code and never echoes or persists the payload', async () => {
+  const store = new MemoryAuditStore();
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const server = createReceiptsServer({ store });
+  await server.connect(serverTransport);
+  const client = new Client({ name: 'digest-test', version: '1.0.0' });
+  await client.connect(clientTransport);
+  try {
+    // The in-memory transport carries values JSON cannot, so an unserializable payload reaches the tool intact.
+    const refused = await client.callTool({ name: 'receipts.digest', arguments: { payload: { secret: 'never-echoed-payload-text', amount: Infinity } } });
+    assert.equal(refused.isError, true);
+    assert.equal(code(refused), 'invalid_payload');
+    assert.ok(!JSON.stringify(refused).includes('never-echoed-payload-text'));
+    assert.ok(!JSON.stringify(refused).includes('Infinity'));
+    const accepted = await client.callTool({ name: 'receipts.digest', arguments: { payload: { secret: 'never-echoed-payload-text' } } });
+    assert.equal(accepted.structuredContent?.packageDigest, digestPayload({ secret: 'never-echoed-payload-text' }));
+    assert.ok(!JSON.stringify(accepted).includes('never-echoed-payload-text'));
+    assert.equal(store.read().length, 0, 'digest persists nothing');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('server construction fails closed on invalid policy, TTL, or signing key before any tool exists', async () => {
+  assert.throws(() => createReceiptsServer({ store: new MemoryAuditStore(), policy: { rules: [{ id: 'dup', effect: 'block' }, { id: 'dup', effect: 'allow' }] } }), errorCode('invalid_policy'));
+  assert.throws(() => createReceiptsServer({ store: new MemoryAuditStore(), claimTtlMs: 0 }), errorCode('invalid_claim_ttl'));
+  assert.throws(() => createReceiptsServer({ store: new MemoryAuditStore(), signingKey: 'not a key' }), errorCode('invalid_signing_key'));
+  assert.throws(() => createReceiptsServer({ store: new MemoryAuditStore(), signingKey: generateKeyPairSync('x25519').privateKey }), errorCode('invalid_signing_key'));
+  await assert.rejects(startHttpServer({ port: 0, store: new MemoryAuditStore(), policy: { defaultEffect: 'maybe' as 'block' } }), errorCode('invalid_policy'));
+  await assert.rejects(startHttpServer({ port: 0, store: new MemoryAuditStore(), signingKey: 'not a key' }), errorCode('invalid_signing_key'));
 });

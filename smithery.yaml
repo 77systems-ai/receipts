@@ -7,5 +7,20 @@ startCommand:
       auditPath:
         type: string
         description: Local path for the append-only receipts audit.
+      policyPath:
+        type: string
+        description: Local path to a JSON WritePolicy applied at claim and dispatch. Host-owned; tools cannot change it.
+      claimTtlMs:
+        type: integer
+        minimum: 1
+        description: TTL in milliseconds for unused claims. Dispatched claims never expire into another write.
+      signingKeyPath:
+        type: string
+        description: Local path to a 0600 PEM PKCS8 Ed25519 private key enabling receipts.sign and receipts.badge. Its contents never leave the machine.
   commandFunction: |-
-    (config) => ({ command: 'npx', args: ['-y', '@77systems/receipts-mcp@0.3.0'], env: config.auditPath ? { RECEIPTS_AUDIT_PATH: config.auditPath } : {} })
+    (config) => ({ command: 'npx', args: ['-y', '@77systems/receipts-mcp@0.3.0'], env: {
+      ...(config.auditPath ? { RECEIPTS_AUDIT_PATH: config.auditPath } : {}),
+      ...(config.policyPath ? { RECEIPTS_POLICY_PATH: config.policyPath } : {}),
+      ...(config.claimTtlMs !== undefined ? { RECEIPTS_CLAIM_TTL_MS: String(config.claimTtlMs) } : {}),
+      ...(config.signingKeyPath ? { RECEIPTS_SIGNING_KEY_PATH: config.signingKeyPath } : {}),
+    } })

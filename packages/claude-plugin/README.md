@@ -1,6 +1,6 @@
 # Receipts for Claude Code
 
-This bundle provides MCP tools, PostToolUse/PostToolUseFailure feedback, and the cooperative Receipts skill.
+This bundle provides the fourteen Receipts MCP tools, PostToolUse/PostToolUseFailure feedback, and the cooperative Receipts skill. The skill walks a chat client through the guarded sequence: `receipts.digest` of the exact approved payload, optional `receipts.policy`, `receipts.claim`, `receipts.dispatch`, exactly one outward write, then `receipts.observe` (or `receipts.record`, `receipts.bind`, and `receipts.complete`). `DUPLICATE` means reconcile, never write; `policy_denied` means release, stop, and report the rule. The hook ignores every Receipts tool, so admission and proof calls never trigger outward-write feedback.
 
 After npm publication:
 

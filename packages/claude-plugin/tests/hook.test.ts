@@ -11,6 +11,14 @@ test('ignores its own tools and ordinary reads', () => {
   assert.equal(evaluateHook({ tool_name: 'mcp__receipts__receipts_classify' }), undefined);
   assert.equal(evaluateHook({ tool_name: 'Read' }), undefined);
 });
+test('ignores every Receipts admission, digest, and proof tool as verification machinery, not an outward write', () => {
+  for (const tool of ['digest', 'policy', 'claim', 'dispatch', 'release', 'complete', 'sign', 'badge', 'record', 'bind', 'verify', 'observe', 'recheck']) {
+    assert.equal(evaluateHook({ tool_name: `mcp__receipts__receipts_${tool}` }), undefined, tool);
+    assert.equal(evaluateHook({ tool_name: `receipts.${tool}` }), undefined, tool);
+  }
+  assert.equal(evaluateHook({ tool_name: 'mcp__receipts__receipts_claim', tool_use_id: 'c1', tool_response: { structuredContent: { verdict: 'CLAIMED', claim: { token: 'never-inspected' } } } }), undefined);
+  assert.equal(evaluateHook({ tool_name: 'mcp__receipts__receipts_dispatch', tool_use_id: 'd1', tool_response: { structuredContent: { verdict: 'AUTHORIZED' } } }), undefined);
+});
 test('an unmapped write cannot guess its destination surface', () => {
   const output = evaluateHook({ tool_name: 'mcp__social__publish' });
   assert.match(output!.hookSpecificOutput.additionalContext, /adapter_required/);
