@@ -8,6 +8,11 @@ import { createHash } from "node:crypto";
  */
 export const PAYLOAD_ENCODING = "receipts-json-v1";
 
+/** Argument errors stay TypeErrors; the code maps into the documented error taxonomy. */
+function payloadError(message: string): TypeError {
+  return Object.assign(new TypeError(message), { code: "invalid_payload" });
+}
+
 export function canonicalSerialize(payload: unknown): string {
   const ancestors = new Set<object>();
   function encode(value: unknown): string {
@@ -16,45 +21,45 @@ export function canonicalSerialize(payload: unknown): string {
       return JSON.stringify(value);
     }
     if (typeof value === "number") {
-      if (!Number.isFinite(value)) throw new TypeError("Payload numbers must be finite.");
+      if (!Number.isFinite(value)) throw payloadError("Payload numbers must be finite.");
       return JSON.stringify(value);
     }
     if (typeof value !== "object") {
-      throw new TypeError(`Unsupported approved payload value: ${typeof value}.`);
+      throw payloadError(`Unsupported approved payload value: ${typeof value}.`);
     }
-    if (ancestors.has(value)) throw new TypeError("Approved payload cannot contain cycles.");
+    if (ancestors.has(value)) throw payloadError("Approved payload cannot contain cycles.");
     if (Object.getOwnPropertySymbols(value).length > 0) {
-      throw new TypeError("Approved payload objects cannot contain symbol keys.");
+      throw payloadError("Approved payload objects cannot contain symbol keys.");
     }
     ancestors.add(value);
     try {
       if (Array.isArray(value)) {
         if (Object.getPrototypeOf(value) !== Array.prototype) {
-          throw new TypeError("Approved payload arrays must be plain JSON arrays.");
+          throw payloadError("Approved payload arrays must be plain JSON arrays.");
         }
         const descriptors = Object.getOwnPropertyDescriptors(value);
         for (let index = 0; index < value.length; index += 1) {
-          if (!Object.hasOwn(value, index)) throw new TypeError("Sparse payload arrays are unsupported.");
+          if (!Object.hasOwn(value, index)) throw payloadError("Sparse payload arrays are unsupported.");
           const descriptor = descriptors[String(index)]!;
           if (!descriptor.enumerable || !("value" in descriptor)) {
-            throw new TypeError("Approved payload arrays cannot contain hidden elements or getters.");
+            throw payloadError("Approved payload arrays cannot contain hidden elements or getters.");
           }
         }
         if (Object.getOwnPropertyNames(value).length !== value.length + 1) {
-          throw new TypeError("Payload arrays cannot contain additional properties.");
+          throw payloadError("Payload arrays cannot contain additional properties.");
         }
         return `[${value.map((_, index) => encode(descriptors[String(index)]!.value)).join(",")}]`;
       }
       const prototype: unknown = Object.getPrototypeOf(value);
       if (prototype !== Object.prototype && prototype !== null) {
-        throw new TypeError("Approved payload objects must be plain JSON objects.");
+        throw payloadError("Approved payload objects must be plain JSON objects.");
       }
       const descriptors = Object.getOwnPropertyDescriptors(value);
       const keys = Object.keys(descriptors).sort();
       return `{${keys.map((key) => {
         const descriptor = descriptors[key]!;
         if (!descriptor.enumerable || !("value" in descriptor)) {
-          throw new TypeError("Approved payload objects cannot contain hidden properties or getters.");
+          throw payloadError("Approved payload objects cannot contain hidden properties or getters.");
         }
         return `${JSON.stringify(key)}:${encode(descriptor.value)}`;
       }).join(",")}}`;

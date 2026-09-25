@@ -36,9 +36,21 @@ export function createReceiptsTelemetry(options:{tracer?:Tracer;store?:AuditStor
     end(span,{verdict:typeof verdict==='string'&&verdicts.has(verdict)?verdict:undefined},true);
     // Never record exceptions: provider messages/stacks can contain credentials and payloads.
   }
+  /**
+   * receipts.receipt.issue means "a receipt document was returned to the caller": a Receipt
+   * from observeDestination, a Binding from bind, or an ExecutionReceipt from execute,
+   * reconcile or recheck. It fires once per issued receipt for every verdict (complete,
+   * delivery_unknown, package_unverified, prewrite) with OK status; the verdict travels in
+   * receipts.verdict, so completions are counted by filtering receipts.verdict = complete.
+   * DUPLICATE and policy_denied are thrown errors, not receipts: they mark the outer
+   * operation span through failure() and never reach this function. A Binding has no
+   * verdict field because bind only succeeds by creating a complete binding.
+   */
   function issue(result:Receipt|Binding|ExecutionReceipt):void {
-    const verdict='classification' in result?result.classification.verdict:'verdict' in result?result.verdict:'complete';
-    if(verdict==='complete') end(start('receipt.issue',result.packageDigest),{...result,verdict});
+    try {
+      const verdict='classification' in result?result.classification.verdict:'verdict' in result?result.verdict:'complete';
+      end(start('receipt.issue',result.packageDigest),{...result,verdict});
+    } catch { /* A receipt already issued is never withdrawn by instrumentation. */ }
   }
   function sync<T>(name:string,action:()=>T,packageDigest?:string):T {
     const span=start(name,packageDigest);

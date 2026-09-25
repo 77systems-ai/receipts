@@ -116,8 +116,9 @@ export class VerificationPendingError extends Error {
 }
 
 function required(value: string, field: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new TypeError(`${field} is required.`);
-  if (value !== value.trim()) throw new TypeError(`${field} must not contain surrounding whitespace.`);
+  // Argument errors stay TypeErrors; the code maps into the documented error taxonomy.
+  if (typeof value !== "string" || !value.trim()) throw Object.assign(new TypeError(`${field} is required.`), { code: "invalid_write" });
+  if (value !== value.trim()) throw Object.assign(new TypeError(`${field} must not contain surrounding whitespace.`), { code: "invalid_write" });
   return value;
 }
 
