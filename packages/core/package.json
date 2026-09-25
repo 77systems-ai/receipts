@@ -2,6 +2,19 @@
   "name": "@77systems/receipts-core",
   "version": "0.3.0",
   "description": "Destination verification and append-only receipts for every AI agent.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "destination-verification",
+    "retry-safety",
+    "append-only"
+  ],
   "type": "module",
   "license": "MIT",
   "engines": {

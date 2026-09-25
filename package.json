@@ -20,7 +20,8 @@
     "check": "npm test && npm run typecheck && npm run demo",
     "pack:check": "npm pack --dry-run --workspaces --json",
     "doctor": "node packages/mcp-server/dist/doctor.js",
-    "demo:github": "node examples/github-issues/dist/index.js"
+    "demo:github": "node examples/github-issues/dist/index.js",
+    "evaluate:github": "npm run build && node scripts/evaluate-github.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

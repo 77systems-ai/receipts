@@ -4,6 +4,20 @@
   "type": "module",
   "license": "MIT",
   "description": "Opt-in local Ed25519 signed Receipts proofs and offline badges.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "ed25519",
+    "signed-receipts",
+    "offline-verification",
+    "badge"
+  ],
   "engines": {
     "node": ">=20"
   },

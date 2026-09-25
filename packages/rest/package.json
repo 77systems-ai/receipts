@@ -2,6 +2,19 @@
   "name": "@77systems/receipts-rest",
   "version": "0.3.0",
   "description": "Receipts destination verification through a local REST API.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "rest-api",
+    "hono",
+    "http"
+  ],
   "type": "module",
   "license": "MIT",
   "engines": {

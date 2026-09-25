@@ -32,7 +32,11 @@ connectorConformance('GitHub issues connector', (context) => {
     setWrongAccount(){state={...state,repository_url:'https://api.github.com/repos/another/test'};},
     setReadFailure(message){readFailure=message;},
   };
-}, {connectorVersion:'0.3.0',seed:'github-v0.3.0',evaluationPath:'docs/evaluations/github-0.3.0.json'});
+}, {connectorVersion:'0.3.0',seed:'github-v0.3.0',
+  // Ordinary test runs write under ignored .receipts/ so the published evaluation never
+  // churns with a developer's Node version or platform. `npm run evaluate:github`
+  // regenerates docs/evaluations/github-0.3.0.json deliberately.
+  evaluationPath:process.env.RECEIPTS_EVALUATION_PATH ?? '.receipts/evaluations/github-0.3.0.json'});
 
 test('GitHub validates the exact object and rejects cross-repository data, pull requests, and changed immutable IDs', async t => {
   let state: Record<string,unknown> = responseData();

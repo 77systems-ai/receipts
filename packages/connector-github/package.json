@@ -4,6 +4,19 @@
   "type": "module",
   "license": "MIT",
   "description": "Local, independently verified GitHub issue receipts.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "github",
+    "github-issues",
+    "connector"
+  ],
   "engines": {
     "node": ">=20"
   },

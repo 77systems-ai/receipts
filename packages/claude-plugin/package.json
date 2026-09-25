@@ -3,6 +3,20 @@
   "version": "0.3.0",
   "type": "module",
   "description": "Automatic Receipts feedback and verification skill for Claude Code.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "claude-code",
+    "claude-plugin",
+    "hooks",
+    "skill"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=20"

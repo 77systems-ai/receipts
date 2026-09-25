@@ -3,6 +3,23 @@
   "version": "0.3.0",
   "mcpName": "io.github.77systems-ai/receipts",
   "description": "Verification for every AI agent: Receipts over MCP stdio and Streamable HTTP.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "stdio",
+    "streamable-http",
+    "claude",
+    "cursor",
+    "smithery"
+  ],
   "type": "module",
   "license": "MIT",
   "engines": {

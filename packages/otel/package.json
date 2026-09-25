@@ -4,6 +4,19 @@
   "type": "module",
   "license": "MIT",
   "description": "Opt-in OpenTelemetry instrumentation for Receipts verification.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "opentelemetry",
+    "observability",
+    "tracing"
+  ],
   "engines": {
     "node": ">=20"
   },

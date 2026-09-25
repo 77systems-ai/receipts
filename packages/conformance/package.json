@@ -4,6 +4,20 @@
   "type": "module",
   "license": "MIT",
   "description": "Public connector conformance tests for Receipts.",
+  "keywords": [
+    "receipts",
+    "verification",
+    "ai-agents",
+    "agent-safety",
+    "idempotency",
+    "audit-log",
+    "hash-chain",
+    "mcp",
+    "conformance",
+    "benchmark",
+    "evaluation",
+    "connector-testing"
+  ],
   "engines": {
     "node": ">=20"
   },
