@@ -1,0 +1,49 @@
+{
+  "name": "@77systems/receipts-rest",
+  "version": "0.1.0",
+  "description": "Receipts destination verification through a local REST API.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "receipts-rest": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/77systems-ai/receipts.git",
+    "directory": "packages/rest"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@77systems/receipts-core": "0.1.0",
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.9"
+  },
+  "homepage": "https://github.com/77systems-ai/receipts#readme",
+  "bugs": {
+    "url": "https://github.com/77systems-ai/receipts/issues"
+  }
+}

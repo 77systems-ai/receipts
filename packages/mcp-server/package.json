@@ -1,0 +1,50 @@
+{
+  "name": "@77systems/receipts-mcp",
+  "version": "0.1.0",
+  "mcpName": "io.github.77systems-ai/receipts",
+  "description": "Verification for every AI agent: Receipts over MCP stdio and Streamable HTTP.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "receipts-mcp": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/77systems-ai/receipts.git",
+    "directory": "packages/mcp-server"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@77systems/receipts-core": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "zod": "^4.6.5"
+  },
+  "homepage": "https://github.com/77systems-ai/receipts#readme",
+  "bugs": {
+    "url": "https://github.com/77systems-ai/receipts/issues"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.77systems-ai/receipts",
+  "description": "Verification for every AI agent: destination receipts, package binding, and retry laws.",
+  "repository": {"url": "https://github.com/77systems-ai/receipts", "source": "github"},
+  "version": "0.1.0",
+  "packages": [{
+    "registryType": "npm", "identifier": "@77systems/receipts-mcp", "version": "0.1.0",
+    "transport": {"type": "stdio"},
+    "environmentVariables": [{"name": "RECEIPTS_AUDIT_PATH", "description": "Local append-only audit JSONL path. Defaults to .receipts/audit.jsonl in the process working directory.", "format": "filepath", "isRequired": false, "isSecret": false}]
+  }]
+}

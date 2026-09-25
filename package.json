@@ -1,0 +1,19 @@
+{
+  "name": "receipts-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Verification for every AI agent.",
+  "license": "MIT",
+  "workspaces": ["packages/*", "examples/*"],
+  "engines": {"node": ">=20"},
+  "scripts": {
+    "build": "npm run build -w @77systems/receipts-core && npm run build -w @77systems/receipts-sdk && npm run build -w @77systems/receipts-mcp && npm run build -w @77systems/receipts-rest && npm run build -w @77systems/receipts-claude-plugin && npm run build -w @77systems/receipts-grok-example",
+    "test": "npm run build && tsx --test packages/*/tests/*.test.ts",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "demo": "npm run demo -w @77systems/receipts-grok-example",
+    "check": "npm test && npm run typecheck && npm run demo",
+    "pack:check": "npm pack --dry-run --workspaces --json"
+  },
+  "devDependencies": {"@types/node": "^20.19.0", "tsx": "4.23.15", "typescript": "~5.9.3"}
+}

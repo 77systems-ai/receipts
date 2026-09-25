@@ -1,0 +1,49 @@
+{
+  "name": "@77systems/receipts-claude-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Automatic Receipts feedback and verification skill for Claude Code.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "receipts-hook": "dist/hook.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    ".claude-plugin",
+    ".mcp.json",
+    "hooks",
+    "skills",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@77systems/receipts-core": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/77systems-ai/receipts.git",
+    "directory": "packages/claude-plugin"
+  },
+  "homepage": "https://github.com/77systems-ai/receipts#readme",
+  "bugs": {
+    "url": "https://github.com/77systems-ai/receipts/issues"
+  }
+}
