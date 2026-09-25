@@ -1,108 +1,85 @@
 # @77systems/receipts-core
 
-Verification for every AI agent. A dependency-free TypeScript mechanism for Node.js 20+ that classifies destination evidence and records append-only receipts.
+Destination verification for Node.js 20+, with zero runtime dependencies.
 
-```sh
-npm install @77systems/receipts-core
-```
+`classify(write)` is pure: no network, filesystem, clock, or mutation. Verdict precedence remains `complete → delivery_unknown → package_unverified → prewrite`. Unknown surfaces throw `not_a_destination_write`. All verdicts refuse automatic retries and second writes. A status flag never proves completion. A pure classification is a decision over supplied input, not a durable receipt.
 
-## The classification is pure
+## Identity and cooperative evidence
 
-```ts
-import { classify, digestPackage } from "@77systems/receipts-core";
-
-const packageDigest = digestPackage("The exact approved message");
-const write = {
-  surface: "social-publish",
-  attemptId: "post-attempt-1",
-  packageDigest,
-  writeMayHaveHappened: true,
-};
-
-console.log(classify(write));
-// verdict: "delivery_unknown"
-// mayAutoRetry: false, maySecondWrite: false, mayRearm: false
-```
-
-`classify` never calls a provider, reads storage, observes the clock, or writes anything. Its normalized inputs are a trust boundary: the caller is responsible for truthful evidence. `boundPackageDigest` describes a binding already established by a trusted caller. A pure classification is not a durable receipt; use `bind` and `verify` for audited completion.
-
-The verdict precedence is `complete` → `delivery_unknown` → `package_unverified` → `prewrite`. All classifications forbid automatic retries and second writes. Rearming is available only for a prewrite with `neverReached: true`, `rearm.causeFixed: true`, a different `rearm.previousDigest`, and a different `rearm.previousAttemptId`. Recording that rearm also requires its previous prewrite to exist in the audit. Missing evidence falls into `prewrite` with rearming disabled; status flags never establish success or uncertainty.
-
-## Observe an existing object, then bind it
-
-Destination observation happens outside core. The adapter must independently read the object and hash the exact relevant content, or accept an explicit human attestation. An executor's successful response is not read-back proof.
+New audit entries require a caller-generated UUID `actionId`, exact `destinationAccount`, `approvalId`, `attemptId`, surface, and SHA-256 package digest. A new intentional action needs a new action ID and approval; an uncertain repeat of the same account/action cannot claim another attempt. Use the SDK to persist the claim before making a write.
 
 ```ts
+import { randomUUID } from "node:crypto";
 import {
-  assertComplete, bind, createAuditEntry, JsonlAuditStore, record, verify,
+  bind, createAuditEntry, digestPackage, getReceipt, MemoryAuditStore, record,
 } from "@77systems/receipts-core";
 
-const store = new JsonlAuditStore("./receipts.jsonl");
-record(createAuditEntry(write, "attempt"), store);
+const store = new MemoryAuditStore();
+const action = {
+  surface: "social-publish",
+  attemptId: randomUUID(),
+  actionId: randomUUID(),
+  destinationAccount: "social:account-42",
+  approvalId: "approval-42",
+  packageDigest: digestPackage("Exact approved content"),
+};
 
-// After your provider adapter actually reads the existing object:
-const destinationId = "post-123";
-const observedDigest = packageDigest; // Compute from read-back content in production.
+// An observation supplied by a host application or human stays cooperative.
+// Both the ID and digest must come from the host's actual destination read.
 record(createAuditEntry({
-  surface: write.surface,
-  attemptId: write.attemptId,
-  packageDigest,
-  destinationId,
-  publicObjectExists: true,
+  ...action,
+  destinationId: hostObservation.id,
   evidence: [{
     source: "provider",
-    detail: "Read back the published message and compared its exact approved content.",
-    destinationId,
-    packageDigest: observedDigest,
+    detail: "Host-provided destination observation",
+    destinationId: hostObservation.id,
+    packageDigest: hostObservation.digest,
+    observedAt: hostObservation.observedAt,
   }],
 }, "observation"), store);
 
-bind(destinationId, packageDigest, store);
-console.log(verify(destinationId, packageDigest, store)); // "complete"
-assertComplete(destinationId, packageDigest, store);
+const receipt = bind(hostObservation.id, action.packageDigest, store, action);
+// receipt.evidenceSource === "host-supplied"
+// receipt.independentlyVerified === false
 ```
 
-`bind` requires an earlier observation with `source: "provider"` or `"human"`, the exact destination ID, and the same SHA-256 digest. It appends a binding entry referencing that observation. A mismatching payload, invented ID, executor status, or absent observation is refused. Repeating the same binding is idempotent. An existing object and digest cannot be credited to a second attempt; reconciliation must retain the original attempt ID. IDs that match multiple surfaces or attempts are refused as ambiguous; use canonical surface-qualified IDs in adapters.
+`hostObservation` represents a real read performed by your host. Caller-supplied `provider` labels and trust flags never earn independent verification. Both `record` and the built-in stores' direct `append` normalize caller observations to `host-supplied`. Cooperative receipts can still be `complete`; consumers requiring independent proof must also require `independentlyVerified === true`.
 
-`verify` reads the audit and returns one of the four verdicts. `record` rejects contradictory verdicts, reused entry IDs, attempt IDs that switch payload or surface, and completion without an earlier audited binding. It returns `void` after the append finishes. `assertComplete(classificationOrVerdict)` is also available for trusted values; its ID/digest/store overload checks the audit.
+## Connector reads
 
-## Register a surface
-
-The built-in examples are `http-post`, `social-publish`, `email-send`, and `file-write`. Unknown names throw `ReceiptsError` with `code: "not_a_destination_write"`; this is an error, not a fifth verdict.
+A `DestinationConnector` (also exported as `TrustedConnector`) is trusted local executable configuration:
 
 ```ts
-import { registerSurface } from "@77systems/receipts-core";
-
-registerSurface({
-  name: "my-message-service",
-  idPattern: /^my-message-service:message:\d+$/,
-  async observe(write) {
-    // Your trusted adapter performs a read here. Core never invokes this callback.
-    const observed = await readActualMessage(write.attemptId);
-    return {
-      destinationId: observed.canonicalId,
-      packageDigest: observed.contentDigest,
-      evidence: [{
-        source: "provider",
-        detail: "Read the message from the destination service.",
-        destinationId: observed.canonicalId,
-        packageDigest: observed.contentDigest,
-      }],
-    };
-  },
-});
+interface DestinationConnector {
+  surface: string;
+  read(request: ConnectorRequest): ConnectorObservation | Promise<ConnectorObservation>;
+}
+// ConnectorObservation: { destinationAccount, destinationId, packageDigest, observedAt }
 ```
 
-The callback example needs your own `readActualMessage` implementation. Pattern validation is syntactic; it cannot prove ownership or provenance. Duplicate registration is refused. Register custom surfaces in every process before reading their entries.
+`observeDestination(connector, request, store?)` invokes `read` itself, validates the exact account, object when supplied, digest, and observation time, appends a trusted observation, and binds matching content. It returns a `Receipt`. The connector must read the actual destination content and compute its digest using the same serialization as the approval; returning the requested digest without comparing content violates the connector contract.
 
-## Audit storage
+`ConnectorRequest` contains action identity and approved digest, optional expected `destinationId`, optional transient `locator`, and optional `recheck`. Locators and provider response content are not stored. Read failures throw `connector_read_failed`; account and object mismatches throw `account_mismatch` and `object_mismatch`. Audit failures propagate. No failure authorizes another write.
 
-The default store uses `RECEIPTS_AUDIT_PATH`, or `.receipts/audit.jsonl`. Every line includes a sequence number, the previous line's hash, the entry, and a SHA-256 hash of canonical JSON. Entries carry timestamp, surface, verdict, destination ID when known, package digest, attempt ID, and supporting evidence.
+Only this core-executed path creates `receipts-read` provenance. The internal capability is an in-memory object identity, not a JSON property. A serialized forged flag cannot use it. The trusted boundary includes installed connector code, custom store code, local credentials, and filesystem access. A caller able to replace executable code or rewrite the audit and head checkpoint is outside that boundary; this is not provider-signed or remotely attested proof.
 
-The `.head` checkpoint detects missing log files and suffix truncation while the checkpoint is retained. An exclusive `.lock` prevents concurrent appends. A lock, changed expected length, malformed entry, incomplete write, hash mismatch, or checkpoint mismatch fails closed. No lock is automatically stolen. A crash can leave a lock or a log/checkpoint mismatch; preserve the files and inspect them before recovery. There is no automatic repair that deletes evidence.
+## Receipts and rechecks
 
-The chain is tamper-evident local storage, not a signature or an external trust anchor. Someone able to rewrite both the log and its checkpoint can reconstruct them. Back up both files together; stronger retention and independent anchoring belong in a hosted backend.
+Every new receipt contains the exact account, object ID, action ID, approval ID, approved package digest, evidence source, independent-verification flag, observation time, and references to the audit and observation entries.
 
-Custom stores implement synchronous `read(): readonly AuditEntry[]` and `append(entry, expectedLength?): void`. Reads must return detached copies; append must validate and preserve existing entries, and atomically compare the expected length when supplied. `record(entry, store, expectedLength)` supports compare-and-append claims. Asynchronous backends are outside this API and are refused. `MemoryAuditStore` provides the same append-only contract for tests and embedded use.
+- `bind(id, digest, store?, scope?)` binds an earlier matching observation and inherits its provenance. Repeated public binding is idempotent.
+- `getReceipt(id, digest, store?, scope?)` returns the first immutable bound receipt or `undefined`.
+- `verify(id, digest, store?, scope?)` checks historical audit state and returns a verdict; it does not contact a provider.
+- `observeDestination(connector, {...request, recheck: true}, store)` requires an existing receipt and appends a current observation. Matching content produces a new complete result with its new observation time. Changed content produces `package_unverified` with `observedPackageDigest`. The original receipt and its original `observedAt` remain unchanged.
 
-The library checks consistency and integrity, not the truthfulness of a provider/human label. Keep record and binding authority inside a trusted adapter or operator boundary. Do not expose these methods as public unauthenticated proof-creation endpoints.
+Scope supports `destinationAccount`, `actionId`, `surface`, and `attemptId`. Ambiguous unscoped IDs are rejected. Every read creates its own proof: a later independent read can add independent proof after a cooperative receipt, while the first historical receipt remains available. Hold the returned new receipt when its specific observation is needed.
+
+## Registry and storage
+
+The existing generic surfaces are `http-post`, `social-publish`, `email-send`, and `file-write`; the GitHub connector registers `github-issue`. Registration is explicit through `registerSurface({name, idPattern})`. Pattern validation checks shape, not authenticity. The legacy `SurfaceDef.observe` callback remains cooperative when invoked by a host or SDK; independent verification requires `observeDestination`.
+
+The default `JsonlAuditStore` uses `RECEIPTS_AUDIT_PATH` or `.receipts/audit.jsonl`. Entries commit to their predecessor hash; the `.head` checkpoint detects tail loss while retained. Exclusive locking and atomic expected-length comparison refuse competing writes. Corruption and incomplete writes fail closed; preserve both files for inspection. No automatic cleanup removes audit evidence.
+
+New writes use a strict field allowlist. Payloads, credentials, provider response bodies, arbitrary extra properties, and status text are not retained. Freeform evidence descriptions and external references become SHA-256 digests; displayed descriptions are code-defined summaries. Identifier fields are metadata: use opaque IDs, never credentials or payload text. The audit remains on the local machine. Existing v0.1 chains are readable without rewriting their hashes and are treated as cooperative; missing legacy scope is reported as `legacy-unknown`.
+
+`MemoryAuditStore` implements the same synchronous append-only rules. Custom stores implement synchronous `read(): readonly AuditEntry[]` and `append(entry, expectedLength?): void`, return detached entries, preserve order, and compare the expected length atomically. Custom store implementations are trusted application code. Async stores are outside this API.

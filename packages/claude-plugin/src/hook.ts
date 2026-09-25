@@ -11,7 +11,7 @@ try {
   }
   const output = evaluateHook(input, mappings as Record<string, string>);
   if (output) process.stdout.write(JSON.stringify(output));
-} catch (error) {
-  process.stderr.write(`Receipts hook failed closed: ${error instanceof Error ? error.message : 'invalid input'}. Completion is unverified.\n`);
+} catch {
+  process.stderr.write('Receipts hook failed closed: invalid or unavailable input. Completion is unverified.\n');
   process.exitCode = 2;
 }

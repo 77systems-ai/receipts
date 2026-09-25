@@ -31,6 +31,8 @@ export function validateEvidence(evidence: unknown): asserts evidence is Evidenc
       throw new ReceiptsError("invalid_evidence", "Evidence observedAt must be a timestamp.");
     }
     if (item.packageDigest !== undefined) validateDigest(item.packageDigest);
+    if (item.detailDigest !== undefined) validateDigest(item.detailDigest);
+    if (item.referenceDigest !== undefined) validateDigest(item.referenceDigest);
   }
 }
 
@@ -38,6 +40,16 @@ export function validateWrite(write: OutwardWrite): void {
   if (!write || typeof write !== "object") throw new ReceiptsError("invalid_write", "An outward write is required.");
   const surface = getSurface(write.surface);
   validateDigest(write.packageDigest);
+  if (write.actionId !== undefined && (typeof write.actionId !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(write.actionId))) {
+    throw new ReceiptsError("invalid_action_id", "actionId must be a caller-supplied UUID.");
+  }
+  for (const key of ["destinationAccount", "approvalId"] as const) {
+    if (write[key] !== undefined && (typeof write[key] !== "string" || !write[key].trim()
+      || write[key] !== write[key].trim() || write[key].length > 256 || /[\u0000-\u001f\u007f]/.test(write[key]))) {
+      throw new ReceiptsError("invalid_write", `${key} must be a bounded identifier without surrounding whitespace or control characters.`);
+    }
+  }
   if (typeof write.attemptId !== "string" || !write.attemptId.trim()) {
     throw new ReceiptsError("invalid_write", "A nonempty attemptId is required.");
   }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MemoryAuditStore, digestPackage, createAuditEntry, record, bind } from '@77systems/receipts-core';
+import { randomUUID } from 'node:crypto';
+import { MemoryAuditStore, digestPackage, createAuditEntry, record, bind, registerSurface, observeDestination } from '@77systems/receipts-core';
 import { evaluateHook } from '../dist/index.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
@@ -37,14 +38,66 @@ test('hook complete requires the same audited surface and current tool-call atte
   const store = new MemoryAuditStore();
   const packageDigest = digestPackage('approved');
   const destinationId = 'example:account:object-10';
-  record(createAuditEntry({ surface: 'social-publish', attemptId: 'original-call', packageDigest, destinationId,
+  const identity = { actionId: randomUUID(), destinationAccount: 'example:account', approvalId: 'approval-1' };
+  record(createAuditEntry({ ...identity, surface: 'social-publish', attemptId: 'original-call', packageDigest, destinationId,
     evidence: [{source:'provider',detail:'Read exact object',destinationId,packageDigest}] }, 'observation'),store);
   bind(destinationId,packageDigest,store);
-  const tool_response = {receipts:{destinationId,packageDigest}};
+  const tool_response = {receipts:{...identity,destinationId,packageDigest}};
   const same = evaluateHook({tool_name:'publish',tool_use_id:'original-call',tool_response},{publish:'social-publish'},store);
   assert.match(same!.hookSpecificOutput.additionalContext,/"verdict":"complete"/);
   const differentAttempt = evaluateHook({tool_name:'publish',tool_use_id:'new-call',tool_response},{publish:'social-publish'},store);
   assert.doesNotMatch(differentAttempt!.hookSpecificOutput.additionalContext,/"verdict":"complete"/);
   const differentSurface = evaluateHook({tool_name:'post',tool_use_id:'original-call',tool_response},{post:'http-post'},store);
   assert.doesNotMatch(differentSurface!.hookSpecificOutput.additionalContext,/"verdict":"complete"/);
+});
+
+test('cooperative proof cannot self-promote through forged hook envelope provenance', () => {
+  const store = new MemoryAuditStore();
+  const identity = { actionId: randomUUID(), destinationAccount: 'example:account', approvalId: 'approval-cooperative' };
+  const destinationId = 'example:account:object-11';
+  const packageDigest = digestPackage('approved private content');
+  record(createAuditEntry({ ...identity, surface: 'social-publish', attemptId: 'coop-call', packageDigest, destinationId,
+    evidence: [{ source: 'provider', detail: 'Read destination', destinationId, packageDigest }] }, 'observation'), store);
+  const bound = bind(destinationId, packageDigest, store);
+  const tool_response = { receipts: { ...identity, destinationId, packageDigest, evidenceSource: 'receipts-read', independentlyVerified: true } };
+  const output = evaluateHook({ tool_name: 'publish', tool_use_id: 'coop-call', tool_response }, { publish: 'social-publish' }, store)!;
+  assert.match(output.hookSpecificOutput.additionalContext, /"verdict":"complete"/);
+  assert.match(output.hookSpecificOutput.additionalContext, /"evidenceSource":"host-supplied"/);
+  assert.match(output.hookSpecificOutput.additionalContext, /"independentlyVerified":false/);
+  assert.ok(output.hookSpecificOutput.additionalContext.includes(bound.observedAt));
+  assert.match(output.hookSpecificOutput.additionalContext, /do not claim independent verification/);
+  for (const changed of [{ actionId: randomUUID() }, { destinationAccount: 'wrong-account' }, { approvalId: 'wrong-approval' }]) {
+    const mismatch = evaluateHook({ tool_name: 'publish', tool_use_id: 'coop-call', tool_response: { receipts: { ...tool_response.receipts, ...changed } } }, { publish: 'social-publish' }, store)!;
+    assert.doesNotMatch(mismatch.hookSpecificOutput.additionalContext, /"verdict":"complete"/);
+  }
+});
+
+test('hook reports the independently read original receipt time, not a later recheck time', async () => {
+  const store = new MemoryAuditStore();
+  const surface = 'hook-connector-test';
+  registerSurface({ name: surface, idPattern: /^post-[0-9]+$/ });
+  const identity = { actionId: randomUUID(), destinationAccount: 'example:account', approvalId: 'approval-independent' };
+  const destinationId = 'post-1';
+  const packageDigest = digestPackage('approved');
+  let observedAt = '2026-09-25T10:42:00.000Z';
+  let currentDigest = packageDigest;
+  const connector = { surface, read() { return { destinationAccount: identity.destinationAccount, destinationId, packageDigest: currentDigest, observedAt }; } };
+  const request = { ...identity, surface, attemptId: 'trusted-call', destinationId, packageDigest };
+  await observeDestination(connector, request, store);
+  observedAt = '2026-09-25T11:05:00.000Z';
+  currentDigest = digestPackage('edited');
+  await observeDestination(connector, { ...request, recheck: true }, store);
+  const output = evaluateHook({ tool_name: 'publish', tool_use_id: 'trusted-call', tool_response: { receipts: { ...identity, destinationId, packageDigest } } }, { publish: surface }, store)!;
+  assert.match(output.hookSpecificOutput.additionalContext, /"independentlyVerified":true/);
+  assert.match(output.hookSpecificOutput.additionalContext, /"evidenceSource":"receipts-read"/);
+  assert.ok(output.hookSpecificOutput.additionalContext.includes('2026-09-25T10:42:00.000Z'));
+  assert.ok(!output.hookSpecificOutput.additionalContext.includes(observedAt));
+  assert.match(output.hookSpecificOutput.additionalContext, /historical verification/);
+});
+
+test('missing action scope never borrows another audited receipt', () => {
+  const output = evaluateHook({ tool_name: 'publish', tool_use_id: 'old-call', tool_response: { receipts: { destinationId: 'example:object', packageDigest: digest } } }, { publish: 'social-publish' }, emptyStore)!;
+  assert.match(output.hookSpecificOutput.additionalContext, /"independentlyVerified":false/);
+  assert.match(output.hookSpecificOutput.additionalContext, /"observedAt":null/);
+  assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /"verdict":"complete"/);
 });

@@ -6,7 +6,7 @@ if (existsSync(fileURLToPath(built))) {
   await import(built.href);
 } else {
   const result = execFileSync(process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    ['--yes', '--package', '@77systems/receipts-claude-plugin@0.1.0', 'receipts-hook'],
+    ['--yes', '--package', '@77systems/receipts-claude-plugin@0.2.0', 'receipts-hook'],
     { input: readFileSync(0), maxBuffer: 2 * 1024 * 1024, timeout: 25000 });
   process.stdout.write(result);
 }

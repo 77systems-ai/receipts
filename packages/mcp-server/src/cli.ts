@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { JsonlAuditStore } from '@77systems/receipts-core';
+import { configuredConnectors } from './runtime-connectors.js';
 import { createReceiptsServer, startHttpServer } from './index.js';
 
 async function main(): Promise<void> {
@@ -21,7 +22,7 @@ async function main(): Promise<void> {
     else if (arg === '--audit-path') auditPath = value;
     else throw new Error(`Invalid option: ${arg} ${value}. Use --help.`);
   }
-  const options = auditPath ? { store: new JsonlAuditStore(auditPath) } : {};
+  const options = { connectors: configuredConnectors(), ...(auditPath ? {store:new JsonlAuditStore(auditPath)} : {}) };
   let close: () => Promise<void>;
   if (transport === 'http') {
     const running = await startHttpServer({ ...options, port });

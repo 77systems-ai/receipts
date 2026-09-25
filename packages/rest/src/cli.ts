@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { JsonlAuditStore } from '@77systems/receipts-core';
+import { createGitHubIssuesConnector } from '@77systems/receipts-github';
 import { startRestServer } from './index.js';
 
 async function main(): Promise<void> {
@@ -18,7 +19,10 @@ async function main(): Promise<void> {
     else if (arg === '--audit-path') auditPath = value;
     else throw new Error(`Invalid option: ${arg} ${value}. Use --help.`);
   }
-  const running = await startRestServer({ port, ...(auditPath ? { store: new JsonlAuditStore(auditPath) } : {}) });
+  const repository = process.env.RECEIPTS_GITHUB_REPO?.split('/');
+  if(repository && repository.length!==2) throw new Error('RECEIPTS_GITHUB_REPO must be owner/repo.');
+  const connectors = repository ? [createGitHubIssuesConnector({owner:repository[0]!,repo:repository[1]!})] : [];
+  const running = await startRestServer({ port, connectors, ...(auditPath ? { store: new JsonlAuditStore(auditPath) } : {}) });
   process.stderr.write(`Receipts REST listening at ${running.url}\n`);
   const shutdown = () => { void running.close().then(() => process.exit(0)).catch(() => process.exit(1)); };
   process.once('SIGINT', shutdown);

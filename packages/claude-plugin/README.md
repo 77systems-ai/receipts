@@ -1,6 +1,6 @@
 # Receipts for Claude Code
 
-Verification for every AI agent. This bundle provides MCP tools, PostToolUse/PostToolUseFailure feedback, and the cooperative Receipts skill.
+This bundle provides MCP tools, PostToolUse/PostToolUseFailure feedback, and the cooperative Receipts skill.
 
 After npm publication:
 
@@ -9,16 +9,18 @@ After npm publication:
 /plugin install receipts@77systems
 ```
 
-For source development, build the repository first, then use `claude --plugin-dir ./packages/claude-plugin`. Its hook launcher uses the local build if present; marketplace installs use the pinned published hook package. The MCP config uses the published MCP package; before publication, use the source MCP command from the root README.
+For source development, build the repository first, then use `claude --plugin-dir ./packages/claude-plugin`. Its hook launcher uses the local build if present; marketplace installs use the pinned published hook package. Before npm publication, configure MCP with the source command from the root README.
 
-The hooks run automatically. Standard Write/Edit/NotebookEdit tools map to file-write; other write tools must be mapped explicitly, for example:
+The hooks run automatically. Standard Write/Edit/NotebookEdit tools map to file-write; other write tools need exact mappings:
 
 ```sh
-export RECEIPTS_HOOK_TOOLS='{"mcp__social__publish":"social-publish","mcp__mail__send":"email-send"}'
+export RECEIPTS_HOOK_TOOLS='{"mcp__social__publish":"social-publish","mcp__mail__send":"email-send","mcp__github__create_issue":"github-issue"}'
 ```
 
-A mapped tool can return a `receipts` object (directly or inside `structuredContent`) with `destinationId` and `packageDigest`. These are lookup pointers, not proof. The hook checks the existing audit binding against the mapped surface, current host tool_use_id as attempt ID, destination ID, and package digest before allowing a complete verdict. Adapters that want automatic complete feedback must use that host tool-call ID as their audited attempt ID; a missing ID stays unverified. It never trusts a tool's `complete` or `boundPackageDigest` claim. Missing or failed outcomes remain uncertain. Unmapped outward tools request an adapter and cannot be verified by this hook.
+A mapped tool can return a `receipts` object directly or inside `structuredContent`, containing `destinationId`, `packageDigest`, `destinationAccount`, `actionId`, and `approvalId`. These are lookup pointers. The hook requires an existing audit binding matching all of them, the configured surface, and the current host `tool_use_id` as `attemptId`. Adapters must audit that exact host tool-call ID. Missing identity, a different account/action/approval, or tool failure cannot borrow another receipt.
 
-Hooks run after tools; they cannot undo the action, intercept every arbitrary shell write, or force an LLM's final words. Use the SDK executor wrapper for enforcement in the write path. The skill is cooperative in chat environments. This repository is not an approved Claude Marketplace listing.
+Feedback reports the stored `evidenceSource`, `independentlyVerified`, and original `observedAt`. Cooperative evidence stays `host-supplied` and false, even if the tool response claims provider or independent proof. Independently executed connector reads are reported as `receipts-read` and true. The hook never silently updates an old receipt's time; an explicit read-only recheck appends its own history. The reported original receipt is historical verification, not a fresh destination check.
+
+The hook never persists tool claims or copies raw input into the audit. Unmapped outward tools request an adapter. Hooks run after execution and cannot undo actions or intercept every shell command. Use the SDK executor wrapper to enforce the write path. The skill provides cooperative guidance for chat clients. This repository is not an approved Claude Marketplace listing.
 
 Configuration follows the official [hooks reference](https://code.claude.com/docs/en/hooks) and [plugin manifest reference](https://code.claude.com/docs/en/plugins-reference).

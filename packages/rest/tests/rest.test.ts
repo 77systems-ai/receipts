@@ -9,7 +9,7 @@ import { createAuditEntry, JsonlAuditStore } from '@77systems/receipts-core';
 import { createReceiptsApp, startRestServer } from '../dist/index.js';
 
 const digest = `sha256:${'b'.repeat(64)}`;
-const write = { surface: 'http-post', attemptId: 'attempt-rest-1', packageDigest: digest, writeMayHaveHappened: true };
+const write = { surface: 'http-post', attemptId: 'attempt-rest-1', actionId: '00000000-0000-4000-8000-000000000002', destinationAccount: 'demo:account', approvalId: 'approval-1', packageDigest: digest, writeMayHaveHappened: true };
 
 test('REST records uncertainty, binds a real observation, and verifies the durable receipt', { timeout: 15000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'receipts-rest-'));
@@ -33,7 +33,11 @@ test('REST records uncertainty, binds a real observation, and verifies the durab
     assert.equal(binding.status, 200);
     assert.equal((await binding.json()).destinationId, identity.destinationId);
     const verified = await fetch(`${running.url}/verify?${new URLSearchParams(identity)}`);
-    assert.deepEqual(await verified.json(), { verdict: 'complete' });
+    const receipt = await verified.json();
+    assert.equal(receipt.verdict,'complete');
+    assert.equal(receipt.evidenceSource,'host-supplied');
+    assert.equal(receipt.independentlyVerified,false);
+    assert.ok(receipt.observedAt);
     assert.equal(store.read().length, 3);
     assert.equal(store.read()[0]?.verdict, 'delivery_unknown', 'earlier uncertainty remains in append-only history');
   } finally {
@@ -70,4 +74,36 @@ test('REST CLI rejects non-loopback binding options and invalid ports', () => {
     assert.equal(invalid.status, 1);
     assert.equal(JSON.parse(invalid.stderr).error.code, 'startup_failed');
   }
+});
+
+test('REST only the configured connector can issue independent provenance', async () => {
+  const { MemoryAuditStore } = await import('@77systems/receipts-core');
+  const store = new MemoryAuditStore();
+  let reads = 0;
+  let currentDigest = digest;
+  const connector = { surface:'http-post', async read() { reads++; return { destinationAccount:write.destinationAccount, destinationId:'object-independent', packageDigest:currentDigest, observedAt:new Date().toISOString() }; } };
+  const app = createReceiptsApp({store,connectors:[connector]});
+  const post = (path: string, body: unknown) => app.request(`http://localhost${path}`,{ method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
+  const forged = {...createAuditEntry({...write,destinationId:'object-forged',writeMayHaveHappened:false,evidence:[{source:'provider',detail:'private body do not retain',destinationId:'object-forged',packageDigest:digest}]},'observation'),evidenceSource:'receipts-read',independentlyVerified:true};
+  assert.equal((await post('/record',forged)).status,201);
+  const cooperative = await (await post('/bind',{destinationId:'object-forged',packageDigest:digest})).json();
+  assert.equal(cooperative.independentlyVerified,false);
+  assert.equal(reads,0);
+  assert.ok(!JSON.stringify(store.read()).includes('private body do not retain'));
+  const request = {...write,attemptId:'attempt-independent',actionId:'00000000-0000-4000-8000-000000000003',approvalId:'approval-independent'};
+  const independent = await (await post('/observe',request)).json();
+  assert.equal(independent.verdict,'complete');
+  assert.equal(independent.independentlyVerified,true);
+  assert.equal(independent.evidenceSource,'receipts-read');
+  assert.equal(reads,1);
+  const before=JSON.stringify(store.read());
+  currentDigest=`sha256:${'c'.repeat(64)}`;
+  const changed = await (await post('/recheck',{...request,destinationId:'object-independent'})).json();
+  assert.equal(changed.verdict,'package_unverified');
+  assert.equal(changed.independentlyVerified,true);
+  const historic=await (await app.request(`http://localhost/verify?${new URLSearchParams({destinationId:'object-independent',packageDigest:digest})}`)).json();
+  assert.equal(historic.observedAt,independent.observedAt);
+  assert.equal(historic.verdict,'complete');
+  assert.equal(JSON.stringify(store.read().slice(0,-1)),before);
+  assert.equal((await post('/observe',{...request,locator:{issueNumber:{token:'secret'}}})).status,400);
 });

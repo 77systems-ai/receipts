@@ -1,6 +1,6 @@
 {
   "name": "receipts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verification for every AI agent. Destination receipts, retry laws, and automatic tool feedback.",
   "author": {"name": "77systems"},
   "homepage": "https://github.com/77systems-ai/receipts",

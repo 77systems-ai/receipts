@@ -18,7 +18,7 @@ npx -y @77systems/receipts-rest --port 3101
 
 The server listens only on `127.0.0.1`. Flags are `--port NUMBER` (default `3101`, range 1–65535), `--audit-path FILE`, and `--help`. `--audit-path` overrides `RECEIPTS_AUDIT_PATH`; otherwise core defaults to `.receipts/audit.jsonl` in the working directory. Use an absolute path for a shared audit. Keep the log's `.head` checkpoint and `.lock` sidecars with it.
 
-Requests are stateless; the audit is durable. There are no accounts or authentication in v1. Use this API only between trusted local processes. A public deployment requires its own authenticated gateway and trusted provider adapters. Host and Origin checks do not authenticate local callers.
+Requests are stateless; the audit is durable. There is no user-account or authentication service. Use this API only between trusted local processes. A public deployment requires its own authenticated gateway and trusted provider adapters. Host and Origin checks do not authenticate local callers.
 
 ## Contract
 
@@ -27,7 +27,9 @@ Requests are stateless; the audit is durable. There are no accounts or authentic
 | `POST /classify` | `OutwardWrite` JSON body | Classification with verdict and permission booleans. |
 | `POST /record` | `AuditEntry` JSON body | `201` and `{ "recorded": true, "id": "…" }` |
 | `POST /bind` | `{ "destinationId": "…", "packageDigest": "sha256:…" }` | Binding and its audit identifiers. |
-| `GET /verify` | `destinationId` and `packageDigest` query parameters | `{ "verdict": "…" }` |
+| `GET /verify` | `destinationId`, `packageDigest`, optional `destinationAccount`, `actionId` | Original receipt with source/time, or unverified result. |
+| `POST /observe` | `ConnectorRequest` JSON body | Independent read and matching binding. |
+| `POST /recheck` | Same request shape as observe | Appended current result; original receipt unchanged. |
 
 Try a fictional uncertain write:
 
@@ -39,10 +41,11 @@ curl -sS http://127.0.0.1:3101/classify \
 
 The result is `delivery_unknown`; all three permissions are false. The demonstration digest is fictional. Use the SHA-256 digest of the exact approved payload in a real integration.
 
-To resolve uncertainty, a trusted adapter or operator first finds the existing object and confirms its package. Append an `observation` audit entry containing that evidence, then call `/bind` with the same ID and digest, then `/verify`. `/bind` will fail without the prior matching observation. This sequence never calls the destination writer again.
+For independent GitHub reads, set `RECEIPTS_GITHUB_REPO=owner/repo` and a local GITHUB_TOKEN or GH_TOKEN before starting. POST /observe with surface, attemptId, actionId (UUID), destinationAccount, approvalId, packageDigest, and a real destinationId or locator (`{issueNumber:42}`). Recheck uses the same identity and requires an existing receipt. Credentials are startup configuration, never request fields.
 
-`classify` evaluates supplied evidence without I/O; it does not establish its authenticity or persist a receipt. `record` checks schema and core consistency before appending. `bind` and `verify` use the audit. None of these endpoints reads a provider or proves that arbitrary client JSON is truthful. Models must never invent destination IDs or observation evidence.
+The permanent cooperative path accepts observations through /record, labels them host-supplied and independentlyVerified false, then binds them through /bind. Forged provider/trust flags cannot make them independent. New audit entries require action/account/approval fields. Bind supports an optional `scope` object; use exact account/action scope when object identities are ambiguous.
 
+Classify is pure and records no proof. Verify reads existing history and does not refresh observation time. Observe/recheck perform provider reads only through locally configured connector code, never a caller-supplied implementation. No endpoint performs an outward provider write.
 Errors use `{ "error": { "code": "…", "message": "…" } }`. Input or core validation errors return `400`, foreign Host/Origin requests `403`, unknown routes `404`, oversized bodies `413`, non-JSON POSTs `415`, and unexpected server errors `500`. Unknown surfaces use `not_a_destination_write` as an error code, not a verdict. JSON bodies are limited to 1 MiB. Startup failures write a JSON error to stderr and exit nonzero.
 
 ## Embed
@@ -55,10 +58,10 @@ registerSurface({ name: 'ticket-create', idPattern: /^ticket-[0-9]+$/ });
 const store = new JsonlAuditStore('/absolute/path/receipts/audit.jsonl');
 const running = await startRestServer({ store, port: 3101 });
 // Later: await running.close();
-// createReceiptsApp({ store }) exposes a Hono app for a controlled integration.
+// createReceiptsApp({ store, connectors: [] }) exposes a Hono app for a controlled integration.
 ```
 
-Registration and observation belong to trusted application code. The transport does not provide an endpoint to alter the surface registry.
+Registration and connector configuration belong to trusted application code. Pass `connectors: [connector]` to configure programmatic readers. The transport does not provide an endpoint to alter the surface registry.
 
 ```sh
 npm run build

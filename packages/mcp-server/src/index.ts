@@ -5,8 +5,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
-  bind, classify, record, verify, ReceiptsError,
-  type AuditStore,
+  bind, classify, record, verify, getReceipt, observeDestination, ReceiptsError,
+  type AuditStore, type TrustedConnector, type ConnectorRequest,
 } from '@77systems/receipts-core';
 
 const text = z.string().min(1);
@@ -17,10 +17,19 @@ const evidenceSchema = z.object({
   destinationId: text.optional(),
   packageDigest: text.optional(),
   reference: text.optional(),
+  detailDigest: text.optional(),
+  referenceDigest: text.optional(),
 }).strict();
 
 // These are wire shapes only. Digest, surface, evidence, and verdict rules live in core.
 const writeSchema = z.object({
+  actionId: text.optional(),
+  destinationAccount: text.optional(),
+  approvalId: text.optional(),
+  evidenceSource: z.enum(['host-supplied', 'receipts-read']).optional(),
+  independentlyVerified: z.boolean().optional(),
+  observedAt: text.optional(),
+  observedPackageDigest: text.optional(),
   surface: text,
   attemptId: text,
   packageDigest: text,
@@ -40,14 +49,21 @@ const entrySchema = writeSchema.extend({
   id: text,
   timestamp: text,
   verdict: z.enum(['prewrite', 'delivery_unknown', 'package_unverified', 'complete']),
-  event: z.enum(['attempt', 'classification', 'observation', 'binding']),
+  event: z.enum(['attempt', 'classification', 'observation', 'binding', 'recheck']),
   evidence: z.array(evidenceSchema),
 });
-const identitySchema = { destinationId: text, packageDigest: text };
+const scopeSchema = z.object({destinationAccount:text.optional(),actionId:text.optional(),surface:text.optional(),attemptId:text.optional()}).strict();
+const identitySchema = { destinationId: text, packageDigest: text, scope: scopeSchema.optional() };
+const connectorRequestSchema = z.object({
+  surface:text,attemptId:text,actionId:text,destinationAccount:text,approvalId:text,packageDigest:text,
+  destinationId:text.optional(),locator:z.record(z.string(),z.union([z.string(),z.number()])).optional(),
+});
+export const RECEIPTS_TOOL_NAMES = ['receipts.classify','receipts.record','receipts.bind','receipts.verify','receipts.observe','receipts.recheck'] as const;
 
-function result(action: () => object): CallToolResult {
+
+async function result(action: () => object | Promise<object>): Promise<CallToolResult> {
   try {
-    const value = action();
+    const value = await action();
     return {
       content: [{ type: 'text', text: JSON.stringify(value) }],
       structuredContent: value as Record<string, unknown>,
@@ -67,20 +83,20 @@ function result(action: () => object): CallToolResult {
   }
 }
 
-export interface ServerOptions { store?: AuditStore }
+export interface ServerOptions { store?: AuditStore; connectors?: readonly TrustedConnector[] }
 
-/** Every server uses the same core contract. Callers supply trusted adapter evidence. */
-export function createReceiptsServer({ store }: ServerOptions = {}): McpServer {
-  const server = new McpServer({ name: 'receipts', version: '0.1.0' });
+/** Every server uses the same core contract. Callers supply cooperative evidence; local connectors supply independent observations. */
+export function createReceiptsServer({ store, connectors = [] }: ServerOptions = {}): McpServer {
+  const server = new McpServer({ name: 'receipts', version: '0.2.0' });
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const appendOnly = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
   server.registerTool('receipts.classify', {
-    description: 'Classify trusted outward-write evidence and return the retry permissions. Pure evaluation; does not observe a provider or persist a receipt.',
+    description: 'Classify supplied outward-write evidence and return the retry permissions. Pure evaluation; does not observe a provider or persist a receipt.',
     inputSchema: { write: writeSchema },
     annotations: readOnly,
   }, ({ write }) => result(() => classify(write)));
   server.registerTool('receipts.record', {
-    description: 'Append a validated audit entry. Observation evidence must come from a trusted adapter or a real human; never invent an ID.',
+    description: 'Append caller-supplied evidence as host-supplied and independentlyVerified false. Never invent an ID. Use receipts.observe for an independent destination read.',
     inputSchema: { entry: entrySchema },
     annotations: appendOnly,
   }, ({ entry }) => result(() => {
@@ -91,12 +107,22 @@ export function createReceiptsServer({ store }: ServerOptions = {}): McpServer {
     description: 'Bind an existing destination object to its approved digest. Requires a previously audited provider/human observation for that same ID and digest; creates no destination object.',
     inputSchema: identitySchema,
     annotations: appendOnly,
-  }, ({ destinationId, packageDigest }) => result(() => bind(destinationId, packageDigest, store)));
+  }, ({ destinationId, packageDigest, scope }) => result(() => bind(destinationId, packageDigest, store, scope)));
   server.registerTool('receipts.verify', {
     description: 'Verify an ID and digest against the local audit. This does not query a live provider.',
     inputSchema: identitySchema,
     annotations: readOnly,
-  }, ({ destinationId, packageDigest }) => result(() => ({ verdict: verify(destinationId, packageDigest, store) })));
+  }, ({ destinationId, packageDigest, scope }) => result(() => getReceipt(destinationId, packageDigest, store, scope) ?? { verdict: verify(destinationId, packageDigest, store, scope), evidenceSource: 'host-supplied', independentlyVerified: false, observedAt: null }));
+  for (const recheck of [false,true]) {
+    server.registerTool(recheck ? 'receipts.recheck' : 'receipts.observe', {
+      description: recheck ? 'Read the destination again using a locally configured connector and append the current result; historical receipts are unchanged.' : 'Read the actual destination with a locally configured connector. Only this server-owned read can issue independentlyVerified evidence.',
+      inputSchema: {request:connectorRequestSchema}, annotations: appendOnly,
+    }, ({request}) => result(async () => {
+      const connector = connectors.find(item => item.surface === request.surface);
+      if (!connector) throw new ReceiptsError('connector_not_configured','Configure this connector locally before requesting an independent read.');
+      return observeDestination(connector,{...request,recheck} as ConnectorRequest,store);
+    }));
+  }
   return server;
 }
 
@@ -143,7 +169,7 @@ function readJson(request: IncomingMessage): Promise<unknown> {
 export interface HttpServerOptions extends ServerOptions { port?: number }
 
 /** Stateless MCP requests, durable core audit, loopback only while v1 has no auth. */
-export async function startHttpServer({ port = 3100, store }: HttpServerOptions = {}) {
+export async function startHttpServer({ port = 3100, store, connectors }: HttpServerOptions = {}) {
   const active = new Set<McpServer>();
   const httpServer = createServer(async (request, response) => {
     if (!isLocalRequest(request)) {
@@ -170,7 +196,7 @@ export async function startHttpServer({ port = 3100, store }: HttpServerOptions 
         error instanceof RangeError ? error.message : 'Invalid JSON.');
       return;
     }
-    const server = createReceiptsServer(store ? { store } : {});
+    const server = createReceiptsServer({store,connectors});
     active.add(server);
     response.once('close', () => {
       active.delete(server);

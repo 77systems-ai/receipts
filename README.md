@@ -2,15 +2,13 @@
 
 **Verification for every AI agent.**
 
-Agents say DONE. Receipts asks for the receipt: an observed destination object, bound to the exact approved package, preserved in an append-only audit. If the result is uncertain, Receipts says what can happen next—and refuses the retry that would create a duplicate.
+An agent says DONE. Receipts asks for an observed destination object bound to the exact approved package. When delivery is uncertain, its executor wrapper refuses another write and supports reading back the existing object.
 
-One mechanism for Claude, ChatGPT integrations, Cursor, Grok, LangChain-style applications, and agents you build yourself. MCP, TypeScript SDK, and REST are thin wrappers around the same dependency-free core.
-
-**v0.1 source is available. npm packages and marketplace/registry listings are not published yet.** Use the source quickstart now. The pinned npm commands below are the release installation paths and become available after publication.
+v0.2 adds independent GitHub issue verification, action-scoped duplicate protection, immutable observation history, `receipts doctor`, and a public connector conformance suite. This repository contains the source release; npm publication is a separate release step.
 
 ## Run from source
 
-Node.js 20 or later. No account, API key, signup, or hosted service is required.
+Node.js 20 or later. The offline demo needs no credentials.
 
 ```sh
 git clone https://github.com/77systems-ai/receipts.git
@@ -20,151 +18,131 @@ npm test
 npm run demo
 ```
 
-The offline Grok reference demo makes one simulated write, loses the response, refuses a second write and a completion claim, observes the existing destination, and binds its receipt. It sends nothing to a real service.
+The offline Grok reference demo simulates a lost response and recovery. Its evidence is explicitly **host-supplied**, not independently verified.
 
-## The 30-second demo
+## Two evidence paths
 
-After `npm test` has built the workspaces:
+| Evidence path | Source | Independently verified |
+| --- | --- | --- |
+| Caller records an observation, including a claimed `provider` source | `host-supplied` | `false` |
+| A locally configured Receipts connector actually reads the destination | `receipts-read` | `true` |
+
+The cooperative path remains supported for chat integrations and human observations. Caller-supplied trust flags cannot upgrade it. Both paths can bind observations to approved package digests; applications can additionally require independent verification.
+
+`complete` describes a matching observed object and package binding. It is not a claim that the destination can never change. Every receipt carries the exact account, object ID, action ID, package digest, proof source, independence flag, and original observation time.
+
+## First independent integration: GitHub issues
+
+Configure a token locally and an exact repository:
 
 ```sh
-node --input-type=module <<'JS'
-import { classify, digestPackage } from '@77systems/receipts-core';
-const result = classify({
-  surface: 'social-publish',
-  attemptId: 'launch-001',
-  packageDigest: digestPackage('The exact approved post'),
-  writeMayHaveHappened: true,
+export RECEIPTS_GITHUB_REPO=your-owner/your-repository
+# Supply GITHUB_TOKEN or GH_TOKEN through your local environment.
+npm run doctor
+```
+
+The setup check starts the actual MCP server, checks all six tools, and checks credential presence without printing values or calling GitHub. It does not test token permissions.
+
+The connector performs only `GET /repos/{owner}/{repo}/issues/{number}`. It validates the exact repository and immutable GitHub object ID, rejects pull requests, and hashes the observed title and body. The approved package shape is `githubIssuePayload(title, body)`; `null` bodies normalize to an empty string. Labels, comments, assignees, and issue state are outside this package identity.
+
+Run the real acceptance example against a **test repository** with Issues enabled and a token permitted to create/read/edit issues there:
+
+```sh
+export RECEIPTS_TEST_REPO=your-owner/your-test-repository
+npm run demo:github -- --live
+```
+
+This deliberately creates one synthetic issue, discards its successful response, blocks a duplicate, finds it through reads, issues an independent receipt, rechecks it, edits it, records the mismatch, and closes it. No write occurs without `--live`. It exports a proof JSON and hash-chained audit under `.receipts/`. See [the example](examples/github-issues/README.md) for interrupted-run recovery.
+
+## TypeScript executor
+
+```ts
+import { randomUUID } from 'node:crypto';
+import { createReceipts } from '@77systems/receipts-sdk';
+import {
+  createGitHubIssuesConnector, githubAccount, githubIssuePayload,
+} from '@77systems/receipts-github';
+
+const owner = 'your-owner';
+const repo = 'your-repository';
+const receipts = createReceipts({
+  connector: createGitHubIssuesConnector({ owner, repo }),
 });
-console.log(result);
-JS
+const attemptId = randomUUID();
+const actionId = randomUUID(); // Persist once per approved logical action.
+const approvalId = randomUUID(); // Supplied by your host's approval flow.
+const payload = githubIssuePayload('Approved title', 'Approved body');
+
+await receipts.execute({
+  surface: 'github-issue', attemptId, actionId, approvalId,
+  destinationAccount: githubAccount(owner, repo), payload,
+  execute: async ({ payload }) => {
+    // Your existing provider call goes here. Never retry it on an uncertain result.
+    // A successful response is still not independent destination proof.
+  },
+});
+
+// Supply an actual discovered issue number; never invent one.
+const result = await receipts.reconcile({
+  surface: 'github-issue', attemptId, payload, locator: { issueNumber: 42 },
+});
+receipts.claimComplete(result, { requireIndependent: true });
 ```
 
-```json
-{
-  "verdict": "delivery_unknown",
-  "mayAutoRetry": false,
-  "maySecondWrite": false,
-  "mayRearm": false,
-  "retryLaw": "never_auto_retry",
-  "destinationId": null,
-  "summary": "A write may have happened. Observe the destination; never retry or create a second write."
-}
-```
+All writers must use the wrapper, share a durable audit store, and retain the original action/account identity. Reusing `(destinationAccount, actionId)` is blocked; changing content or attempt IDs does not evade that guard. Identical content with a new action and new approval is allowed. An approval identifier records host authorization; Receipts does not authenticate an approval UI or sandbox arbitrary application code.
 
-`classify` is pure. It does not read a provider or persist proof. For durable completion, record trusted read-back evidence, bind the object to its approved digest, and verify the audit. A model-supplied ID is not automatically trusted evidence.
+`recheck(...)` appends the current observation. `getReceipt(...)` returns the original stored receipt without querying the provider or refreshing its time. Compare both the verdict and `independentlyVerified`; an independently observed **mismatch** is still a mismatch.
 
-## Four verdicts. Clear next steps.
+## MCP and REST
 
-| Verdict | What is known | Auto retry | Second write | Rearm |
-| --- | --- | --- | --- | --- |
-| `prewrite` | Destination has not been reached, or no destination evidence is supplied | No | No | Only with affirmative prewrite evidence, fixed cause, new digest **and** new attempt |
-| `delivery_unknown` | A write may have happened | Never | Never | No |
-| `package_unverified` | An object exists; the package binding is missing | Never | Never | No |
-| `complete` | Destination ID and approved package binding match | No | No | No |
-
-Precedence is `complete → delivery_unknown → package_unverified → prewrite`. Unknown surfaces throw `not_a_destination_write`; this is a rejection, not a fifth verdict. A status like `sent`, `published`, or `completed` never proves success.
-
-## Connect your agent
-
-### Claude Code, Cursor, and local MCP clients
-
-Run the source server now:
+Run stdio MCP from source:
 
 ```sh
 node packages/mcp-server/dist/cli.js
 ```
 
-Use an absolute path to that file in your client's MCP configuration with `command: "node"`. After npm publication, the portable configuration is:
+Use an absolute path in your MCP client's configuration. Set `RECEIPTS_AUDIT_PATH` to a persistent local path shared by cooperating processes. Set `RECEIPTS_GITHUB_REPO` and a local token to enable independent GitHub reads.
 
-```json
-{
-  "mcpServers": {
-    "receipts": {
-      "command": "npx",
-      "args": ["-y", "@77systems/receipts-mcp@0.1.0"],
-      "env": { "RECEIPTS_AUDIT_PATH": "/absolute/path/to/receipts-audit.jsonl" }
-    }
-  }
-}
-```
-
-Four tools: `receipts.classify({write})`, `receipts.record({entry})`, `receipts.bind({destinationId, packageDigest})`, and `receipts.verify({destinationId, packageDigest})`.
-
-Streamable HTTP is also available for clients that use it:
+Six tools: `receipts.classify`, `receipts.record`, `receipts.bind`, `receipts.verify`, `receipts.observe`, and `receipts.recheck`. Caller evidence always uses the cooperative path. The last two tools use connectors configured locally at startup.
 
 ```sh
 node packages/mcp-server/dist/cli.js --transport http --port 3100
-```
-
-The endpoint is `http://127.0.0.1:3100/mcp`. v1 binds to loopback; hosted ChatGPT/Claude connectors require a separately secured gateway. No hosted endpoint or authentication service is included.
-
-### Claude plugin
-
-The bundle combines MCP tools, automatic tool-result feedback, and a verification skill. After npm publication:
-
-```text
-/plugin marketplace add 77systems-ai/receipts
-/plugin install receipts@77systems
-```
-
-The hook runs without asking the model to invoke it. Configure exact outward-tool mappings; it checks existing audit bindings and does not accept a tool's success claim as proof. Hooks provide feedback after execution. The SDK wrapper enforces the write path. See [plugin setup and coverage](packages/claude-plugin/README.md). Marketplace submission is pending.
-
-### Grok, LangChain-style apps, and custom agents
-
-After publication, install `@77systems/receipts-sdk` and `@77systems/receipts-core`. The same imports work inside this source workspace now.
-
-```ts
-import { createReceipts } from '@77systems/receipts-sdk';
-
-const receipts = createReceipts();
-const result = await receipts.execute({
-  surface: 'social-publish',
-  attemptId: 'launch-001',
-  idempotencyKey: 'social:account-42:launch',
-  payload: { account: 'account-42', text: 'The exact approved post' },
-  execute: async ({ payload, idempotencyKey }) => {
-    // Call your provider here, forwarding its idempotency key if supported.
-    // A success response alone will not complete this receipt.
-  },
-});
-
-// Throws until a trusted observer has produced an audited package binding.
-receipts.claimComplete(result);
-```
-
-Register a surface with a read-only `observe` adapter for real completion. The SDK computes the payload digest, persists an atomic execution claim, and marks a thrown result uncertain without retrying. All callers must use the wrapper and share the store and stable action keys. [The runnable reference demo](examples/grok-bot) shows the full resolution path.
-
-### REST / non-JavaScript stacks
-
-```sh
 node packages/rest/dist/cli.js --port 3101
 ```
 
-```sh
-curl http://127.0.0.1:3101/classify \
-  -H 'Content-Type: application/json' \
-  -d '{"surface":"http-post","attemptId":"request-1","packageDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","writeMayHaveHappened":true}'
-```
+Streamable HTTP listens on `http://127.0.0.1:3100/mcp`; REST uses `http://127.0.0.1:3101`. Both are loopback-only. REST exposes `POST /classify`, `/record`, `/bind`, `/observe`, `/recheck`, and `GET /verify`. Hosted chat connectors need a separately secured gateway; none is included here.
 
-The digest in this classification-only example is illustrative. Production calls must hash the exact approved payload.
+The [Claude plugin](packages/claude-plugin/README.md) combines MCP, automatic tool-result feedback, and a verification skill. Hooks report evidence; the SDK controls writes routed through its executor.
 
-Routes: `POST /classify`, `POST /record`, `POST /bind`, `GET /verify?destinationId=...&packageDigest=...`. Configure one persistent audit path for cooperating processes. HTTP request handlers hold no session state; the audit backend retains receipts. See [REST details](packages/rest/README.md).
+## Four verdicts
 
-## The mechanism
+| Verdict | What it means | Permitted next step |
+| --- | --- | --- |
+| `complete` | Observed destination ID is bound to the approved package | Inspect provenance and observation time; recheck when needed |
+| `delivery_unknown` | A write may have happened | Read the destination; never automatically retry or create a second object |
+| `package_unverified` | An object exists without a matching approved binding | Inspect/bind the existing object; never create another |
+| `prewrite` | No destination evidence, or confirmed never reached | Rearm only with affirmative prewrite evidence, fixed cause, a new digest and attempt |
 
-- `packages/core`: pure classification, closed pluggable surface registry, digest validation, binding, verification, and hash-chained JSONL audit. Zero runtime dependencies.
-- `packages/mcp-server`: stdio and Streamable HTTP.
-- `packages/sdk`: payload hashing and enforced executor wrapper.
-- `packages/rest`: Hono HTTP wrapper.
-- `packages/claude-plugin`: hooks, MCP configuration, and Skill.
-- `examples/grok-bot`: offline bot/tool-loop reference.
+Precedence stays `complete → delivery_unknown → package_unverified → prewrite`. All verdicts deny automatic retry and second writes. Unknown surfaces throw `not_a_destination_write`. Status flags never prove completion. `classify` is pure; a hypothetical classification is not a stored receipt.
 
-Generic `http-post`, `social-publish`, `email-send`, and `file-write` surfaces validate ID shapes. They do not ship credentials or provider-specific readers. Register your own exact provider/account surface and observer; see [the adapter contract](docs/ARCHITECTURE.md).
+## Privacy and trust
 
-The default audit is `.receipts/audit.jsonl`, configurable with `RECEIPTS_AUDIT_PATH`. Every stored record commits to the previous record's hash. A lock and compare-and-append guard concurrent claims. This detects edits within a retained chain, not a malicious rewrite of the entire file; externally anchored checkpoints are a future hosted-store concern. File access and the adapter are trusted boundaries.
+**Local reads. Hashes in your audit.** The connector processes destination content in local memory to compute a digest; it never stores issue titles, bodies, credentials, or arbitrary provider errors in the audit. Evidence descriptions and external references are digested. Use opaque identifiers for account, approval, attempt, and provider idempotency metadata; never put payload text or secrets in identifier fields.
 
-## Free forever
+The audit stays on your disk. There is no Receipts-hosted service or telemetry. Credentials come from your local environment and are sent only to GitHub for authentication over HTTPS, with redirects disabled. We do not receive them. “Receipts never sees data” would be inaccurate: read-back needs to inspect the destination locally.
 
-The full mechanism, local storage, MCP, SDK, and REST are MIT-licensed and free forever. No signup. Team and Enterprise will add hosted visibility, fleet oversight, retention, and export—not a paywall around verification. Those services are outside v1.
+Every persisted entry is hash chained. A retained head checkpoint detects local edits or truncation; someone able to rewrite both the log and head can forge history. This is not a provider signature or an externally witnessed proof. Locally configured executable connectors and storage implementations remain trusted boundaries. No blockchain or anchoring is included.
 
-[Architecture](docs/ARCHITECTURE.md) · [Release status](docs/RELEASE.md) · [MIT license](LICENSE)
+## Packages and compatibility
+
+- `receipts-core`: dependency-free classification, registry, audit, bindings and connector contract.
+- `receipts-sdk`: canonical payload hashing and durable executor guard.
+- `receipts-github`: independent GitHub issues reader.
+- `receipts-conformance`: reusable failure-case suite for connectors.
+- `receipts-mcp`, `receipts-rest`, `receipts-claude-plugin`: integration surfaces.
+
+All packages use the `@77systems/` npm scope. v0.1 logs remain readable with cooperative provenance. New durable actions require `actionId` (UUID), `destinationAccount`, and `approvalId`; existing integrations must add those identities before writing v0.2 entries. Legacy generic surface registrations remain available; GitHub issues is the only added provider integration.
+
+The entire local mechanism is MIT licensed. No signup, hosted infrastructure, UI, billing, or marketplace submission is included.
+
+[Architecture](docs/ARCHITECTURE.md) · [Conformance](packages/conformance/README.md) · [Release checklist](docs/RELEASE.md) · [MIT license](LICENSE)

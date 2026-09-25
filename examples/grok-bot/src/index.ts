@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +41,9 @@ const receipts = createReceipts({ store });
 const request = {
   surface: "grok-demo-post",
   attemptId: "demo-attempt-001",
+  actionId: randomUUID(),
+  destinationAccount: "demo:demo-account",
+  approvalId: "demo-approval-001",
   idempotencyKey: "demo-account:announcement-001",
   payload: approvedPayload,
   execute({ payload }: { payload: Readonly<typeof approvedPayload> }) {
@@ -68,8 +72,11 @@ const reconciled = await receipts.reconcile({
 const destinationId = receipts.claimComplete(reconciled);
 assert.equal(reconciled.classification.verdict, "complete");
 assert.equal(destinationId, "demo-post-001");
+assert.equal(reconciled.evidenceSource, "host-supplied");
+assert.equal(reconciled.independentlyVerified, false);
+assert.ok(reconciled.observedAt);
 assert.equal(writes, 1);
 assert.deepEqual(store.read().map((entry) => entry.event), ["attempt", "classification", "observation", "binding", "classification"]);
-console.log("3. Read existing destination object; verified the approved payload and bound it.");
-console.log(`4. Bot may now say: Posted. Receipt: ${destinationId}. No duplicate was created.`);
+console.log("3. Cooperative fixture read-back bound the approved payload; evidenceSource: host-supplied, independentlyVerified: false.");
+console.log(`4. Bot may now say: Posted in the offline fixture. Receipt: ${destinationId}. Observed at ${reconciled.observedAt}. No duplicate was created.`);
 console.log(`Append-only audit: ${auditPath}`);
