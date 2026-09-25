@@ -27,7 +27,7 @@
   },
   "bin": {
     "receipts-mcp": "dist/cli.js",
-    "receipts": "dist/doctor.js"
+    "receipts": "dist/receipts.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

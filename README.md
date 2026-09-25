@@ -49,7 +49,7 @@ const receipts = createReceipts({
 });
 ```
 
-The default policy permits registered surfaces. Explicit block rules win; an optional `defaultEffect: 'block'` enables allow-list behavior. A blocked write throws `PolicyDeniedError` with `verdict: 'policy_denied'`, its `ruleId`, and an audit reference. Policy denial makes no provider write and releases the unused SDK reservation. Budgets count durable dispatch attempts, including uncertain ones, across clients sharing the store.
+The default policy permits registered surfaces. Explicit block rules win; an optional `defaultEffect: 'block'` enables allow-list behavior. A blocked write throws `PolicyDeniedError` with `verdict: 'policy_denied'`, its `ruleId`, and an audit reference. Policy is evaluated at claim and again at dispatch: a forbidden write is refused at claim with a single audited `policy_denied` record and no reservation, while a budget consumed between claim and dispatch is denied at dispatch and the unused reservation is released. No provider write happens either way. Budgets count durable dispatch attempts, including uncertain ones, across clients sharing the store. An approval is spent by any other action on its account that may have written or holds a live reservation; released or expired unused reservations free it.
 
 Admission outcomes explain whether execution may start. They are separate from the four destination-verification verdicts below. Direct registry APIs and detailed lease rules are in [core](packages/core/README.md). All writers must use the guarded boundary; this is not an execution sandbox.
 
@@ -71,7 +71,7 @@ export RECEIPTS_GITHUB_REPO=your-owner/your-repository
 npm run doctor
 ```
 
-The setup check starts the actual MCP server, checks all six tools, and checks credential presence without printing values or calling GitHub. It does not test token permissions.
+The setup check starts the actual MCP server, checks all fourteen tools, and checks credential presence without printing values or calling GitHub. It does not test token permissions. `npm run doctor -- --json` prints the same checks as JSON, and `npm run bug-report` assembles a redacted support bundle (versions, platform, configuration presence, doctor checks, audit shape) as a prefilled GitHub issue that you review before submitting; it never captures payloads, credentials, identifiers, or file paths.
 
 The connector performs only `GET /repos/{owner}/{repo}/issues/{number}`. It validates the exact repository and immutable GitHub object ID, rejects pull requests, and hashes the observed title and body. The approved package shape is `githubIssuePayload(title, body)`; `null` bodies normalize to an empty string. Labels, comments, assignees, and issue state are outside this package identity.
 
@@ -162,6 +162,8 @@ Precedence stays `complete → delivery_unknown → package_unverified → prewr
 **Local reads. Hashes in your audit.** The connector processes destination content in local memory to compute a digest; it never stores issue titles, bodies, credentials, or arbitrary provider errors in the audit. Evidence descriptions and external references are digested. Use opaque identifiers for account, approval, attempt, and provider idempotency metadata; never put payload text or secrets in identifier fields.
 
 The audit stays on your disk. There is no Receipts-hosted service or telemetry. Credentials come from your local environment and are sent only to GitHub for authentication over HTTPS, with redirects disabled. We do not receive them. “Receipts never sees data” would be inaccurate: read-back needs to inspect the destination locally.
+
+Every error, refusal, and decision reason Receipts surfaces maps to one documented code in [the error taxonomy](docs/ERRORS.md), generated from core and enforced by a test; MCP and REST error envelopes carry its hint and link.
 
 Every persisted entry is hash chained. A retained head checkpoint detects local edits or truncation; someone able to rewrite both the log and head can forge history. This is not a provider signature or an externally witnessed proof. Locally configured executable connectors and storage implementations remain trusted boundaries. No blockchain or anchoring is included.
 

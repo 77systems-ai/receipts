@@ -186,7 +186,7 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 ### claim_not_dispatched
 
-**Probable cause.** complete was called for a reservation that never recorded dispatch, for example an agent that observed a destination without calling dispatch first.
+**Probable cause.** complete was called for a reservation that never recorded dispatch, or (as a warning on receipts.observe) a destination was observed for an action whose live reservation was never dispatched: the write bypassed dispatch and its budget.
 
 **Suggested fix.** Dispatch immediately before the outward write. If no write happened, release the reservation instead of completing it.
 

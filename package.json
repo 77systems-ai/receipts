@@ -19,7 +19,8 @@
     "demo": "npm run demo -w @77systems/receipts-grok-example",
     "check": "npm test && npm run typecheck && npm run demo",
     "pack:check": "npm pack --dry-run --workspaces --json",
-    "doctor": "node packages/mcp-server/dist/doctor.js",
+    "doctor": "node packages/mcp-server/dist/receipts.js doctor",
+    "bug-report": "node packages/mcp-server/dist/receipts.js bug-report",
     "demo:github": "node examples/github-issues/dist/index.js",
     "evaluate:github": "npm run build && node scripts/evaluate-github.mjs",
     "docs:errors": "tsx scripts/generate-errors-doc.ts"

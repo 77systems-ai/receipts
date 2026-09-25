@@ -244,17 +244,143 @@ test('doctor boots through an executable link and checks credentials without exp
   const directory = await mkdtemp(join(tmpdir(), 'receipts-doctor-bin-'));
   t.after(() => rm(directory, {recursive:true,force:true}));
   const doctor = join(directory,'receipts');
-  await symlink(fileURLToPath(new URL('../dist/doctor.js', import.meta.url)),doctor);
+  await symlink(fileURLToPath(new URL('../dist/receipts.js', import.meta.url)),doctor);
   const secret = 'sensitive-doctor-test-token';
-  const run = spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: { ...process.env,GITHUB_TOKEN:secret,RECEIPTS_GITHUB_REPO:'fixture/test' }, timeout:15000 });
+  const configured = { ...process.env,GITHUB_TOKEN:secret,RECEIPTS_GITHUB_REPO:'fixture/test' };
+  const run = spawnSync(process.execPath,[doctor,'doctor','--json'], { encoding:'utf8', env: configured, timeout:15000 });
   assert.equal(run.status,0,run.stderr);
   const report = JSON.parse(run.stdout);
   assert.equal(report.ok,true);
-  assert.ok(report.checks.some((check: {check:string;ok:boolean}) => check.check === 'mcp_tools' && check.ok));
+  assert.equal(report.version,'0.3.0');
+  assert.ok(report.checks.every((check: {name:unknown;ok:unknown;detail:unknown}) => typeof check.name === 'string' && typeof check.ok === 'boolean' && typeof check.detail === 'string'));
+  assert.ok(report.checks.some((check: {name:string;ok:boolean}) => check.name === 'mcp_tools' && check.ok));
   assert.ok(!`${run.stdout}${run.stderr}`.includes(secret));
-  const missing = spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: { ...process.env,GITHUB_TOKEN:'',GH_TOKEN:'',RECEIPTS_GITHUB_REPO:'' }, timeout:15000 });
+  // The default rendering is for people; --json is the machine-readable contract and stdout carries nothing else.
+  const human = spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: configured, timeout:15000 });
+  assert.equal(human.status,0,human.stderr);
+  assert.match(human.stdout,/receipts doctor \(@77systems\/receipts-mcp 0\.3\.0\)/);
+  assert.match(human.stdout,/ok {2,}mcp_tools/);
+  assert.match(human.stdout,/Result: ok/);
+  assert.throws(() => JSON.parse(human.stdout));
+  assert.ok(!human.stdout.includes(secret));
+  const missing = spawnSync(process.execPath,[doctor,'doctor','--json'], { encoding:'utf8', env: { ...process.env,GITHUB_TOKEN:'',GH_TOKEN:'',RECEIPTS_GITHUB_REPO:'' }, timeout:15000 });
   assert.equal(missing.status,1);
-  assert.equal(JSON.parse(missing.stdout).checks.find((check: {check:string}) => check.check === 'github_credentials').ok,false);
+  assert.equal(JSON.parse(missing.stdout).checks.find((check: {name:string}) => check.name === 'github_credentials').ok,false);
+  assert.match(spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: { ...process.env,GITHUB_TOKEN:'',GH_TOKEN:'',RECEIPTS_GITHUB_REPO:'' }, timeout:15000 }).stdout,/FAIL {2}github_credentials/);
+  for (const args of [[], ['nonsense'], ['doctor','--verbose']]) {
+    const bad = spawnSync(process.execPath,[doctor,...args], { encoding:'utf8', env: configured, timeout:15000 });
+    assert.equal(bad.status,1);
+    assert.match(`${bad.stdout}${bad.stderr}`,/Usage:/);
+  }
+});
+
+test('bug-report assembles a redacted support bundle and never emits values, identifiers, digests, or paths', { timeout: 30000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'receipts-bug-report-private-segment-7f3a-'));
+  t.after(() => rm(directory, {recursive:true,force:true}));
+  const receipts = join(directory,'receipts');
+  await symlink(fileURLToPath(new URL('../dist/receipts.js', import.meta.url)),receipts);
+  const auditPath = join(directory,'audit.jsonl');
+  const store = new JsonlAuditStore(auditPath);
+  const privateAccount = 'social:very-private-account-91ac';
+  const actionId = '00000000-0000-4000-8000-00000000c0de';
+  const privateDigest = `sha256:${'c'.repeat(64)}`;
+  store.append(createAuditEntry({ surface: 'social-publish', attemptId: 'private-attempt-55', actionId, destinationAccount: privateAccount, approvalId: 'private-approval-77', packageDigest: privateDigest, writeMayHaveHappened: true }, 'attempt'));
+  const secrets = ['bug-report-secret-token-3e1', 'secretowner/secretrepo', 'private-segment-7f3a', privateAccount, actionId, privateDigest, 'private-attempt-55', 'private-approval-77', '/policy/private-policy.json', '/keys/private-signing-key.pem'];
+  const env = { ...process.env, GITHUB_TOKEN: secrets[0]!, GH_TOKEN: '', RECEIPTS_GITHUB_REPO: secrets[1]!, RECEIPTS_AUDIT_PATH: auditPath,
+    RECEIPTS_POLICY_PATH: secrets[8]!, RECEIPTS_SIGNING_KEY_PATH: secrets[9]!, RECEIPTS_CLAIM_TTL_MS: '', RECEIPTS_HOOK_TOOLS: '' };
+  const run = spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor','--tail','5'], { encoding:'utf8', env, timeout:20000 });
+  assert.equal(run.status,0,run.stderr);
+  const report = JSON.parse(run.stdout);
+  for (const secret of secrets) assert.ok(!`${run.stdout}${run.stderr}`.includes(secret), `bundle leaked ${secret}`);
+  assert.match(report.title,/^Bug report: @77systems\/receipts-mcp 0\.3\.0 \(/);
+  for (const heading of ['## Summary','## Steps to reproduce','## Environment','## Packages','## Configuration','## Doctor','## Audit health']) assert.ok(report.body.includes(heading), heading);
+  assert.equal(report.bundle.configuration.GITHUB_TOKEN,'present');
+  assert.equal(report.bundle.configuration.GH_TOKEN,'absent');
+  assert.equal(report.bundle.configuration.RECEIPTS_POLICY_PATH,'present');
+  assert.equal(report.bundle.configuration.RECEIPTS_CLAIM_TTL_MS,'absent');
+  assert.equal(report.bundle.packages['@77systems/receipts-mcp'],'0.3.0');
+  assert.equal(report.bundle.doctor,null);
+  assert.deepEqual({ ...report.bundle.audit, tail: undefined }, { location:'environment', exists:true, entries:1, headCheckpoint:true, chain:'valid', tail:undefined });
+  assert.deepEqual(report.bundle.audit.tail.map((entry: {event:string;verdict:string;surface:string;admission:string|null}) => [entry.event, entry.verdict, entry.surface, entry.admission]), [['attempt','delivery_unknown','social-publish',null]]);
+  assert.deepEqual(Object.keys(report.bundle.audit.tail[0]).sort(), ['admission','event','evidenceSource','sequence','surface','timestamp','verdict']);
+  assert.ok(report.url.startsWith('https://github.com/77systems-ai/receipts/issues/new?title='));
+  assert.equal(report.truncated,false);
+  assert.equal(decodeURIComponent(new URL(report.url).searchParams.get('body')!), report.body);
+  // Markdown by default with the link offered on stderr; --url prints only the link; --tail 0 drops the shape table.
+  const markdown = spawnSync(process.execPath,[receipts,'bug-report','--no-doctor'], { encoding:'utf8', env, timeout:20000 });
+  assert.equal(markdown.status,0);
+  assert.match(markdown.stdout,/^## Summary/);
+  assert.match(markdown.stderr,/--open/);
+  assert.match(markdown.stderr,/Nothing has been sent/);
+  const url = spawnSync(process.execPath,[receipts,'bug-report','--url','--no-doctor'], { encoding:'utf8', env, timeout:20000 });
+  assert.equal(url.stdout.trim().split('\n').length,1);
+  assert.ok(url.stdout.startsWith('https://github.com/77systems-ai/receipts/issues/new?'));
+  const noTail = JSON.parse(spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor','--tail','0','--audit-path',auditPath], { encoding:'utf8', env: { ...env, RECEIPTS_AUDIT_PATH: '' }, timeout:20000 }).stdout);
+  assert.equal(noTail.bundle.audit.location,'flag');
+  assert.deepEqual(noTail.bundle.audit.tail,[]);
+  assert.ok(!noTail.body.includes('| # |'));
+  // A corrupt or unregistered audit is reported by code, never by content.
+  await writeFile(auditPath, (await readFile(auditPath,'utf8')).replace('delivery_unknown','complete'));
+  const corrupt = JSON.parse(spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor'], { encoding:'utf8', env, timeout:20000 }).stdout);
+  assert.equal(corrupt.bundle.audit.chain,'audit_corrupt');
+  assert.equal(corrupt.bundle.audit.entries,1);
+  for (const secret of secrets) assert.ok(!JSON.stringify(corrupt).includes(secret));
+  const absent = JSON.parse(spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor'], { encoding:'utf8', env: { ...env, RECEIPTS_AUDIT_PATH: join(directory,'nowhere.jsonl') }, timeout:20000 }).stdout);
+  assert.deepEqual({ exists: absent.bundle.audit.exists, chain: absent.bundle.audit.chain, entries: absent.bundle.audit.entries }, { exists:false, chain:'absent', entries:null });
+  // With the doctor included, the bundle embeds the same machine-readable checks.
+  // The doctor boots the real server, so the bogus policy and key paths above would (correctly) fail startup; clear them here.
+  const full = JSON.parse(spawnSync(process.execPath,[receipts,'bug-report','--json'], { encoding:'utf8', env: { ...env, RECEIPTS_AUDIT_PATH: auditPath, RECEIPTS_POLICY_PATH: '', RECEIPTS_SIGNING_KEY_PATH: '' }, timeout:25000 }).stdout);
+  assert.ok(full.bundle.doctor.checks.some((check: {name:string;ok:boolean}) => check.name === 'mcp_tools' && check.ok));
+  assert.match(full.body,/\| mcp_tools \| ok \|/);
+  for (const secret of secrets) assert.ok(!JSON.stringify(full).includes(secret));
+  assert.equal(spawnSync(process.execPath,[receipts,'bug-report','--tail','abc'], { encoding:'utf8', env, timeout:20000 }).status,1);
+});
+
+test('tool errors carry the documented hint and docs link from the error taxonomy', async () => {
+  const running = await startHttpServer({ port: 0, store: new MemoryAuditStore() });
+  const client = new Client({ name: 'taxonomy-test', version: '1.0.0' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(running.url)));
+    const unknown = await client.callTool({ name: 'receipts.classify', arguments: { write: { ...write, surface: 'unregistered' } } });
+    const error = unknown.structuredContent?.error as { code: string; message: string; hint?: string; docs?: string };
+    assert.equal(error.code, 'not_a_destination_write');
+    assert.equal(error.docs, 'https://github.com/77systems-ai/receipts/blob/main/docs/ERRORS.md#not_a_destination_write');
+    assert.match(error.hint ?? '', /Register the surface locally/);
+    assert.doesNotMatch(JSON.stringify(error), /unregistered.*unregistered/, 'the hint is static and never echoes input');
+    const noConnector = await client.callTool({ name: 'receipts.observe', arguments: { request: write } });
+    assert.equal((noConnector.structuredContent?.error as { code: string; docs: string }).docs, 'https://github.com/77systems-ai/receipts/blob/main/docs/ERRORS.md#connector_not_configured');
+  } finally { await client.close(); await running.close(); }
+});
+
+test('observing a destination for a claim that was never dispatched completes nothing and warns about the bypassed dispatch', async () => {
+  const store = new MemoryAuditStore();
+  const action: ApprovedAction = { surface: 'social-publish', attemptId: 'undispatched-attempt', actionId: '00000000-0000-4000-8000-00000000d15c', destinationAccount: 'demo:account', approvalId: 'approval-undispatched', packageDigest: digest };
+  const running = await startHttpServer({ port: 0, store, connectors: [{ surface: action.surface, read: async (request) => ({ destinationAccount: action.destinationAccount, destinationId: `post-${request.attemptId}`, packageDigest: digest, observedAt: '2026-09-25T10:42:00.000Z' }) }] });
+  const client = new Client({ name: 'undispatched-test', version: '1.0.0' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(running.url)));
+    const claimed = await client.callTool({ name: 'receipts.claim', arguments: { action } });
+    assert.equal(claimed.structuredContent?.verdict, 'CLAIMED');
+    const observed = await client.callTool({ name: 'receipts.observe', arguments: { request: action } });
+    assert.equal(observed.isError, undefined);
+    assert.equal(observed.structuredContent?.verdict, 'complete');
+    assert.equal(observed.structuredContent?.independentlyVerified, true);
+    assert.equal(observed.structuredContent?.admission, undefined, 'no dispatch was recorded, so nothing completes');
+    assert.deepEqual(observed.structuredContent?.warnings, ['claim_not_dispatched']);
+    assert.equal(store.read().filter(entry => entry.event === 'attempt').length, 0);
+    assert.equal(store.read().filter(entry => entry.event === 'claim_completed').length, 0);
+    // The binding still fails closed: the action cannot be reclaimed and written again.
+    const again = await client.callTool({ name: 'receipts.claim', arguments: { action: { ...action, attemptId: 'after-bypass' } } });
+    assert.equal(again.structuredContent?.verdict, 'DUPLICATE');
+    assert.equal(again.structuredContent?.reason, 'completed');
+    // A properly dispatched attempt emits no warning.
+    const clean: ApprovedAction = { ...action, actionId: '00000000-0000-4000-8000-00000000c1ea', attemptId: 'dispatched-attempt', approvalId: 'approval-dispatched' };
+    const lease = (await client.callTool({ name: 'receipts.claim', arguments: { action: clean } })).structuredContent?.claim as ClaimLease;
+    assert.equal((await client.callTool({ name: 'receipts.dispatch', arguments: { claim: lease } })).structuredContent?.verdict, 'AUTHORIZED');
+    const cleanObserved = await client.callTool({ name: 'receipts.observe', arguments: { request: clean } });
+    assert.equal(cleanObserved.structuredContent?.warnings, undefined);
+    assert.equal((cleanObserved.structuredContent?.admission as { verdict: string }).verdict, 'COMPLETED');
+  } finally { await client.close(); await running.close(); }
 });
 
 test('MCP configured read issues independent evidence and forged metadata stays cooperative', async () => {

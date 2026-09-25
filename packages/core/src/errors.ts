@@ -127,7 +127,7 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
     "dispatch or release was called on a lease that already recorded dispatch.",
     "A dispatched write may have reached the destination. Read it back and bind it; it can never be released or dispatched again."],
   claim_not_dispatched: ["admission",
-    "complete was called for a reservation that never recorded dispatch, for example an agent that observed a destination without calling dispatch first.",
+    "complete was called for a reservation that never recorded dispatch, or (as a warning on receipts.observe) a destination was observed for an action whose live reservation was never dispatched: the write bypassed dispatch and its budget.",
     "Dispatch immediately before the outward write. If no write happened, release the reservation instead of completing it."],
   policy_denied: ["admission",
     "The configured write policy refused the action: a matching block rule, an unmatched allow-list under defaultEffect block (ruleId default-policy), or an exhausted rate budget. Returned by claim and dispatch, thrown by the SDK as PolicyDeniedError, and audited as a named decision.",

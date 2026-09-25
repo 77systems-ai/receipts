@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
-  bind, classify, record, verify, getReceipt, observeDestination, getDefaultStore, createIdempotencyRegistry, validatePolicy, ReceiptsError,
+  bind, classify, record, verify, getReceipt, observeDestination, getDefaultStore, createIdempotencyRegistry, validatePolicy, describeError, ReceiptsError,
   type AuditStore, type TrustedConnector, type ConnectorRequest, type WritePolicy, type IdempotencyRegistry, type Receipt,
 } from '@77systems/receipts-core';
 import { digestPayload, PAYLOAD_ENCODING } from '@77systems/receipts-sdk';
@@ -83,10 +83,14 @@ async function result(action: () => object | Promise<object>): Promise<CallToolR
       structuredContent: value as Record<string, unknown>,
     };
   } catch (error) {
+    // Every envelope names a documented code. The hint and link come from the taxonomy, never from input.
+    const code = error instanceof ReceiptsError ? error.code : 'internal_error';
+    const entry = describeError(code);
     const value = {
       error: {
-        code: error instanceof ReceiptsError ? error.code : 'internal_error',
+        code,
         message: error instanceof ReceiptsError ? error.message : 'Receipts could not complete the operation.',
+        ...(entry ? { hint: entry.fix, docs: entry.docs } : {}),
       },
     };
     return {
@@ -212,8 +216,15 @@ function buildServer({ audit, connectors, policy, registry, privateKey }: Resolv
       if (receipt.verdict !== 'complete') return receipt;
       // Mirror the SDK: a bound independent read completes the audited lease for this attempt.
       // Legacy or cooperative attempts without a lease are returned unchanged; no lease is invented.
-      const attempt = audit.read().find(entry => entry.event === 'attempt' && entry.attemptId === request.attemptId);
-      if (!attempt?.registry) return receipt;
+      const entries = audit.read();
+      const attempt = entries.find(entry => entry.event === 'attempt' && entry.attemptId === request.attemptId);
+      if (!attempt?.registry) {
+        // A live reservation that never dispatched means the write bypassed dispatch (and its budget).
+        // The binding still fails closed against any reclaim; surface the gap so the operator sees it.
+        const lease = entries.filter(entry => entry.registry && entry.event !== 'policy_denied' && entry.destinationAccount === request.destinationAccount
+          && entry.actionId?.toLowerCase() === request.actionId.toLowerCase()).at(-1);
+        return lease?.event === 'claim' ? { ...receipt, warnings: ['claim_not_dispatched'] } : receipt;
+      }
       const admission = registry.completeVerified({
         surface: attempt.surface, attemptId: attempt.attemptId, actionId: attempt.actionId!,
         destinationAccount: attempt.destinationAccount!, approvalId: attempt.approvalId!, packageDigest: attempt.packageDigest,

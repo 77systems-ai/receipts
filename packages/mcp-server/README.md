@@ -150,7 +150,15 @@ A programmatic server can pass `{ store, connectors, policy, claimTtlMs, signing
 - A signed proof embeds the full local audit snapshot and attests this server's local key, not the provider. Verifiers need the public key from a separately trusted source. Review a proof before sharing it.
 - Hosted deployments need a separately secured gateway. This server authenticates nobody.
 
-Run `node packages/mcp-server/dist/doctor.js doctor`, or the installed `receipts doctor`, to check Node, actual MCP boot, all tools, and credential presence. It makes no destination request and never prints token values.
+## Support CLI
+
+The `receipts` executable (`node packages/mcp-server/dist/receipts.js` from source) carries two support commands. Neither prints credential values, payloads, identifiers, digests, or file paths.
+
+`receipts doctor` checks Node, actual MCP boot, the full tool list, and credential presence, rendered for people with a nonzero exit when a check fails. `receipts doctor --json` prints the same report as `{ ok, version, checks: [{ name, ok, detail }] }` with nothing else on stdout, so it can be piped into scripts. It makes no destination request.
+
+`receipts bug-report` assembles a redacted support bundle and prints it as a Markdown issue body: package versions, Node and platform, which configuration variables are present (never their values), the doctor checks, and the audit's health (entry count, head checkpoint, chain validity as `valid` or an error code) with a shape-only tail of recent entries (sequence, timestamp, event, verdict, admission verdict, evidence source, surface). Accounts, action and attempt identifiers, digests, evidence, lease metadata, and the audit path itself are omitted, and any configured value that somehow appears is replaced with `[redacted]`. `--url` prints a prefilled GitHub new-issue link, `--open` opens it in a browser, `--json` prints the bundle, `--audit-path FILE`, `--tail N` (0 disables the table), and `--no-doctor` adjust what is collected. Nothing is submitted or uploaded; you review the form before creating the issue.
+
+Every tool error envelope names a documented code with a `hint` and `docs` link from the [error taxonomy](../../docs/ERRORS.md).
 Failures from core return `isError: true` with `{ "error": { "code": "…", "message": "…" } }` as text and structured content. Invalid tool argument shapes produce an MCP input-validation error. Unknown surfaces return `not_a_destination_write`; there is no fifth verdict. HTTP rejects invalid content types, bodies over 1 MiB, invalid JSON, foreign Host headers, and cross-origin requests. Startup failures write a JSON error to stderr and exit nonzero. Stdout is reserved for MCP in stdio mode.
 
 ## Extend and test

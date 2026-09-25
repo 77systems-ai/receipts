@@ -8,7 +8,7 @@ This milestone builds on merged v0.2 with atomic fenced claims, policy/rate admi
 
 Run `npm ci`, `npm test`, `npm run typecheck`, `npm run demo`, and `npm run pack:check`. The CI matrix runs Node 20, 22, and 24. Unit/integration tests exercise both MCP transports, REST, hash chaining, privacy, forged evidence, duplicate claims, connector failures, and historical rechecks.
 
-Run `npm run doctor` with local GitHub configuration to verify MCP startup and all fourteen tools. It checks credential presence, not token permissions.
+Run `npm run doctor` with local GitHub configuration to verify MCP startup and all fourteen tools. It checks credential presence, not token permissions. `npm run doctor -- --json` is the machine-readable form; `npm run bug-report` produces the redacted support bundle used for issues. `npm run docs:errors` must leave `docs/ERRORS.md` unchanged (a core test enforces it), and `npm run evaluate:github` regenerates the public evaluation deliberately; ordinary test runs never touch it.
 
 Run the explicitly gated real [GitHub example](../examples/github-issues/README.md) in a test repository. Preserve its local proof JSON for inspection. Its audit and credential values must not be committed or uploaded. The v0.2 implementation was exercised against the real GitHub API on 2026-09-25: lost-response recovery, duplicate refusal, independent receipt, matching recheck, edited-object mismatch, original history retention, and fixture closure passed. A recovered interrupted run and a fresh end-to-end run both succeeded.
 
