@@ -20,6 +20,8 @@ npm run demo
 
 The offline Grok reference demo simulates a lost response and recovery. Its evidence is explicitly **host-supplied**, not independently verified.
 
+New here? [Get your first verified receipt in 5 minutes](docs/QUICKSTART.md) — no tokens, no accounts, just the file connector on your own disk.
+
 ## Two evidence paths
 
 | Evidence path | Source | Independently verified |

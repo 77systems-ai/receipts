@@ -129,6 +129,10 @@ This deliberately fictional digest is for demonstration. The result is `delivery
 
 ## Guarded write sequence
 
+New here? Start with [the 5-minute quickstart](../../docs/QUICKSTART.md): one staged file, five calls, first verified receipt. The loop below is the whole product — learn it first; everything else in the tool list is for advanced cases.
+
+A guarded, verified write is five steps, four of them Receipts calls:
+
 1. `receipts.prepare` with the approved action and exactly one of `payload` (the exact approved JSON) or `file` (`{ source, destination }`, file-write only). It digests, evaluates policy, and claims in one call. With `file`, the server reads the staged file and claims its exact bytes for `destination`, so content cannot be re-authored between approval and write. `DUPLICATE` carries its reason and a hint (reconcile, wait, or obtain a new approval); `policy_denied` reserves nothing. `receipts.digest`, `receipts.policy`, and `receipts.claim` remain available as separate steps.
 2. `receipts.dispatch` with the returned claim, immediately before the write. `AUTHORIZED` durably records that the write may happen and consumes the shared budget. `policy_denied` means the budget moved between claim and dispatch: call `receipts.release` and stop.
 3. Perform exactly one outward write with your own tool; after a staged `prepare`, copy the staged file to `destination` byte-for-byte. Never dispatch the same claim twice. A crash after dispatch is uncertain until the destination is read back; the lease never expires into another write.
@@ -136,6 +140,8 @@ This deliberately fictional digest is for demonstration. The result is `delivery
 5. `receipts.sign` or `receipts.badge` when a shareable proof is required and a key is configured.
 
 That is five steps for a guarded, verified, signed write, four of them Receipts calls. Observe and sign stay separate because they must happen after the write. A non-complete observe or recheck result carries `hint` and `docs`: `package_unverified` means the bytes written differ from the claimed bytes, so claim from the staged file next time instead of re-authoring the content.
+
+The remaining tools are for advanced cases — reach for them after the loop above is working:
 
 `classify` evaluates supplied evidence without I/O. `record` always labels caller observations host-supplied with independentlyVerified false, including forged provider/trust flags. `bind` requires an audited exact object/package observation and inherits its provenance. `verify` inspects history without refreshing it.
 
