@@ -54,6 +54,30 @@
           "format": "filepath",
           "isRequired": false,
           "isSecret": false
+        },
+        {
+          "name": "RECEIPTS_FILE_ROOTS",
+          "description": "Absolute directories the file-write connector may read back, separated by the platform path delimiter. Required to enable file read-back.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RECEIPTS_FILE_ACCOUNT",
+          "description": "Destination account label for file-write receipts. Defaults to local:file.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RECEIPTS_GMAIL_ACCOUNT",
+          "description": "Mailbox label for Gmail send receipts; must match the claimed destinationAccount. Requires RECEIPTS_GMAIL_TOKEN.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RECEIPTS_GMAIL_TOKEN",
+          "description": "Local Google OAuth access token able to read the mailbox. Sent only to gmail.googleapis.com; never audited.",
+          "isRequired": false,
+          "isSecret": true
         }
       ]
     }

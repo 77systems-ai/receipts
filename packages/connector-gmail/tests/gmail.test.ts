@@ -4,7 +4,7 @@ import test from 'node:test';
 import { connectorConformance } from '@77systems/receipts-conformance';
 import { digestPayload } from '@77systems/receipts-sdk';
 import {
-  createGmailConnector, canonicalGmailPayload, normalizeEmailBody, EMAIL_SEND_SURFACE,
+  createGmailConnector, canonicalGmailPayload, canonicalAddressList, normalizeEmailBody, EMAIL_SEND_SURFACE,
   type GmailMessage, type GmailMessageFetcher,
 } from '../dist/index.js';
 
@@ -17,24 +17,25 @@ function base64Url(value: string): string {
   return Buffer.from(value, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-interface FixtureMessage { to: string; subject: string; body: string; labelIds: string[] }
+interface FixtureMessage { to: string; subject: string; body: string; labelIds: string[]; cc?: string; bcc?: string; html?: string; attachment?: boolean }
 
+/** A plain-text message unless the fixture adds an HTML alternative or an attachment. */
 function toApiMessage(id: string, message: FixtureMessage): GmailMessage {
+  const headers = [
+    { name: 'To', value: message.to },
+    { name: 'Subject', value: message.subject },
+    ...(message.cc !== undefined ? [{ name: 'Cc', value: message.cc }] : []),
+    ...(message.bcc !== undefined ? [{ name: 'Bcc', value: message.bcc }] : []),
+  ];
+  const plain = { mimeType: 'text/plain', body: { data: base64Url(message.body) } };
+  const parts = [plain,
+    ...(message.html !== undefined ? [{ mimeType: 'text/html', body: { data: base64Url(message.html) } }] : []),
+    ...(message.attachment ? [{ mimeType: 'application/pdf', filename: 'q3.pdf', body: { attachmentId: 'att-1' } }] : [])];
   return {
     id,
     labelIds: message.labelIds,
-    internalDate: String(Date.now()),
-    payload: {
-      headers: [
-        { name: 'To', value: message.to },
-        { name: 'Subject', value: message.subject },
-      ],
-      mimeType: 'multipart/alternative',
-      parts: [
-        { mimeType: 'text/plain', body: { data: base64Url(message.body) } },
-        { mimeType: 'text/html', body: { data: base64Url(`<p>${message.body}</p>`) } },
-      ],
-    },
+    internalDate: '1700000000000',
+    payload: parts.length === 1 ? { headers, ...plain } : { headers, mimeType: 'multipart/mixed', parts },
   };
 }
 
@@ -160,12 +161,16 @@ test('Gmail fails closed on provider errors and timeouts without leaking them', 
   } finally { clearTimeout(keepAlive); }
 });
 
-test('Gmail canonical payload trims addresses and keeps cc/bcc/html only when set', () => {
+test('Gmail canonical payload canonicalizes recipient lists and keeps cc/bcc/html only when set', () => {
   assert.equal(normalizeEmailBody('a\r\nb  \n\n'), 'a\nb');
-  const base = canonicalGmailPayload({ to: ` ${TO} `, subject: SUBJECT, body: 'x\n' });
+  const base = canonicalGmailPayload({ to: ` ${TO} `, subject: ` ${SUBJECT} `, body: 'x\n' });
   assert.deepEqual(base, { to: TO, subject: SUBJECT, body: 'x' });
-  const full = canonicalGmailPayload({ to: TO, subject: SUBJECT, body: 'x', cc: 'cc@example.com ', bcc: '', html: true });
-  assert.deepEqual(full, { to: TO, subject: SUBJECT, body: 'x', cc: 'cc@example.com', html: true });
+  const full = canonicalGmailPayload({ to: TO, subject: SUBJECT, body: 'x', cc: 'cc@example.com ', bcc: '', html: '<p>x</p>\n' });
+  assert.deepEqual(full, { to: TO, subject: SUBJECT, body: 'x', cc: 'cc@example.com', html: '<p>x</p>' });
+  assert.equal(canonicalAddressList('"Doe, Jane" <Jane@Example.com>, bob@example.com ,  <jane@example.com>'), 'bob@example.com, jane@example.com');
+  assert.equal(canonicalAddressList('Alice <alice@example.com>'), 'alice@example.com');
+  assert.equal(canonicalAddressList(' , '), '');
+  assert.throws(() => canonicalGmailPayload({ to: TO, subject: SUBJECT, body: 'x', html: true as unknown as string }), { code: 'invalid_gmail_payload' });
   assert.throws(() => canonicalGmailPayload({ to: ' ', subject: SUBJECT, body: 'x' }), { code: 'invalid_gmail_payload' });
   assert.throws(() => canonicalGmailPayload({ to: TO, subject: SUBJECT, body: 42 as unknown as string }), { code: 'invalid_gmail_payload' });
 });
@@ -176,4 +181,44 @@ test('Gmail sent message id matches the registered email-send surface pattern', 
   const observed = await createGmailConnector({ account: ACCOUNT, getMessage })
     .read(request(ACCOUNT, digestPayload(payload)));
   assert.match(observed.destinationId, /^[A-Za-z0-9<][A-Za-z0-9._:@<>+-]{0,255}$/);
+});
+
+async function observe(approved: Parameters<typeof canonicalGmailPayload>[0], sent: FixtureMessage) {
+  const approvedDigest = digestPayload(canonicalGmailPayload(approved));
+  const observed = await createGmailConnector({ account: ACCOUNT, getMessage: async () => toApiMessage(MESSAGE_ID, sent) })
+    .read(request(ACCOUNT, approvedDigest));
+  return { matches: observed.packageDigest === approvedDigest, observed };
+}
+
+test('Gmail never binds a sent message with an unapproved recipient, rendering, or attachment', async () => {
+  const approved = { to: TO, subject: SUBJECT, body: 'Q3 numbers' };
+  const sent: FixtureMessage = { to: TO, subject: SUBJECT, body: 'Q3 numbers', labelIds: ['SENT'] };
+  assert.equal((await observe(approved, sent)).matches, true, 'the exact approved message binds');
+  for (const [label, change] of [
+    ['an unapproved Bcc', { bcc: 'attacker@evil.example' }],
+    ['an unapproved Cc', { cc: 'someone@else.example' }],
+    ['an extra To recipient', { to: `${TO}, attacker@evil.example` }],
+    ['an unapproved HTML alternative', { html: '<p>click evil.example</p>' }],
+    ['an unapproved attachment', { attachment: true }],
+  ] as const) {
+    assert.equal((await observe(approved, { ...sent, ...change })).matches, false, `${label} must not bind`);
+  }
+});
+
+test('Gmail binds approved Cc, Bcc, and HTML alternatives regardless of address presentation', async () => {
+  const approved = { to: `${TO}, second@example.com`, cc: 'bob@example.com', bcc: 'audit@example.com', subject: SUBJECT, body: 'Q3 numbers', html: '<p>Q3 numbers</p>' };
+  const sent: FixtureMessage = { to: '"Second" <SECOND@example.com>, Founder <founder@example.com>', cc: 'Bob <bob@example.com>', bcc: 'audit@example.com',
+    subject: SUBJECT, body: 'Q3 numbers\r\n', html: '<p>Q3 numbers</p>\r\n', labelIds: ['SENT'] };
+  assert.equal((await observe(approved, sent)).matches, true);
+  // Each approved rendering and recipient is required: dropping one from the sent message breaks the match.
+  for (const change of [{ html: undefined }, { cc: undefined }, { bcc: undefined }, { html: '<p>Q3 numbers, edited</p>' }]) {
+    assert.equal((await observe(approved, { ...sent, ...change })).matches, false);
+  }
+});
+
+test('Gmail observedAt is the time of the read, never the message send time', async () => {
+  const before = Date.now();
+  const { observed } = await observe({ to: TO, subject: SUBJECT, body: 'x' }, { to: TO, subject: SUBJECT, body: 'x', labelIds: ['SENT'] });
+  const observedAt = Date.parse(observed.observedAt);
+  assert.ok(observedAt >= before && observedAt <= Date.now(), 'internalDate (2023) must not become the observation time');
 });

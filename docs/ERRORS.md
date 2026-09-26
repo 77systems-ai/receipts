@@ -264,6 +264,12 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 **Suggested fix.** Provide the locator in the surface's canonical form: a positive integer issue number, an absolute file path, or the message id from the send result. Unsafe locators are rejected before any destination read.
 
+### invalid_timeout
+
+**Probable cause.** A GitHub or Gmail connector's timeoutMs is outside 1 to 60000 milliseconds.
+
+**Suggested fix.** Configure a read timeout within that range.
+
 ## SDK executor errors
 
 ### duplicate_write_refused
@@ -291,12 +297,6 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 **Probable cause.** githubIssuePayload received a non-string title or a body that is neither a string nor null.
 
 **Suggested fix.** Pass the approved title string and body string (null becomes an empty string).
-
-### invalid_timeout
-
-**Probable cause.** timeoutMs is outside 1 to 60000 milliseconds.
-
-**Suggested fix.** Configure a read timeout within that range.
 
 ### missing_github_token
 
@@ -332,23 +332,29 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 ### invalid_file_account
 
-**Probable cause.** The file connector's account id is empty.
+**Probable cause.** The file connector's account id is longer than 256 characters or contains control characters.
 
 **Suggested fix.** Configure a nonempty accountId, or set RECEIPTS_FILE_ACCOUNT locally. It must match the claim's destinationAccount.
 
 ### invalid_file_roots
 
-**Probable cause.** An allowed root is not an absolute path.
+**Probable cause.** The allowed roots list is empty or contains a path that is not absolute, or maxBytes is not a positive integer. Over MCP, the file connector was enabled without RECEIPTS_FILE_ROOTS.
 
-**Suggested fix.** Configure allowed roots as absolute paths, or set RECEIPTS_FILE_ROOTS as a colon-separated list of absolute paths.
+**Suggested fix.** Configure allowed roots as absolute paths, or set RECEIPTS_FILE_ROOTS to absolute paths separated by the platform path delimiter (':' on macOS and Linux, ';' on Windows).
+
+### file_too_large
+
+**Probable cause.** The file at the requested path is larger than the connector's maxBytes read limit (16 MiB by default).
+
+**Suggested fix.** Raise maxBytes when constructing the connector if files this large are expected. No verification was issued; never repeat the write.
 
 ## Gmail connector
 
 ### invalid_gmail_payload
 
-**Probable cause.** canonicalGmailPayload received a missing or blank recipient, or a subject or body that is not a string.
+**Probable cause.** canonicalGmailPayload received no To recipient, or a subject, body, cc, bcc, or html value that is not a string.
 
-**Suggested fix.** Pass the approved recipient, subject string, and body string. Addresses are trimmed; cc, bcc, and html are optional.
+**Suggested fix.** Pass the approved To list, subject, and plain body as strings; cc, bcc, and the HTML body are optional strings. Recipient order, case, and display names do not affect the digest.
 
 ### invalid_gmail_account
 

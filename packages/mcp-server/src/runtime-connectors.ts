@@ -1,3 +1,4 @@
+import { delimiter } from 'node:path';
 import type { TrustedConnector } from '@77systems/receipts-core';
 import { createGitHubIssuesConnector } from '@77systems/receipts-github';
 import { createFileConnector } from '@77systems/receipts-file';
@@ -36,9 +37,11 @@ export function configuredConnectors(): readonly TrustedConnector[] {
   const fileAccount = process.env.RECEIPTS_FILE_ACCOUNT?.trim();
   const fileRoots = process.env.RECEIPTS_FILE_ROOTS?.trim();
   if (fileAccount || fileRoots) {
+    // Tool calls choose the path, so the server never reads outside explicitly configured roots.
+    if (!fileRoots) throw new Error('RECEIPTS_FILE_ROOTS is required to enable the file connector over MCP.');
     connectors.push(createFileConnector({
       ...(fileAccount ? { accountId: fileAccount } : {}),
-      ...(fileRoots ? { roots: fileRoots.split(':').map((s) => s.trim()).filter(Boolean) } : {}),
+      roots: fileRoots.split(delimiter).map((s) => s.trim()).filter(Boolean),
     }));
   }
   return connectors;

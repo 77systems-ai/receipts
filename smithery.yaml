@@ -17,10 +17,18 @@ startCommand:
       signingKeyPath:
         type: string
         description: Local path to a 0600 PEM PKCS8 Ed25519 private key enabling receipts.sign and receipts.badge. Its contents never leave the machine.
+      fileRoots:
+        type: string
+        description: Absolute directories the file-write connector may read back, separated by the platform path delimiter. Enables file read-back.
+      fileAccount:
+        type: string
+        description: Destination account label for file-write receipts. Defaults to local:file.
   commandFunction: |-
     (config) => ({ command: 'npx', args: ['-y', '@77systems/receipts-mcp@0.3.0'], env: {
       ...(config.auditPath ? { RECEIPTS_AUDIT_PATH: config.auditPath } : {}),
       ...(config.policyPath ? { RECEIPTS_POLICY_PATH: config.policyPath } : {}),
       ...(config.claimTtlMs !== undefined ? { RECEIPTS_CLAIM_TTL_MS: String(config.claimTtlMs) } : {}),
       ...(config.signingKeyPath ? { RECEIPTS_SIGNING_KEY_PATH: config.signingKeyPath } : {}),
+      ...(config.fileRoots ? { RECEIPTS_FILE_ROOTS: config.fileRoots } : {}),
+      ...(config.fileAccount ? { RECEIPTS_FILE_ACCOUNT: config.fileAccount } : {}),
     } })

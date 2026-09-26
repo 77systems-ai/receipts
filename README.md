@@ -131,7 +131,7 @@ Run stdio MCP from source:
 node packages/mcp-server/dist/cli.js
 ```
 
-Use an absolute path in your MCP client's configuration. Set `RECEIPTS_AUDIT_PATH` to a persistent local path shared by cooperating processes. Set `RECEIPTS_GITHUB_REPO` and a local token to enable independent GitHub reads.
+Use an absolute path in your MCP client's configuration. Set `RECEIPTS_AUDIT_PATH` to a persistent local path shared by cooperating processes. Set `RECEIPTS_GITHUB_REPO` and a local token to enable independent GitHub reads. Set `RECEIPTS_FILE_ROOTS` for file-write read-back, or `RECEIPTS_GMAIL_ACCOUNT` and `RECEIPTS_GMAIL_TOKEN` for Gmail send read-back; see the [MCP README](packages/mcp-server/README.md#configuration).
 
 Fourteen tools. Evidence: `receipts.classify`, `receipts.record`, `receipts.bind`, `receipts.verify`, `receipts.observe`, and `receipts.recheck`. Admission: `receipts.digest`, `receipts.policy`, `receipts.claim`, `receipts.dispatch`, `receipts.release`, and `receipts.complete`. Proof: `receipts.sign` and `receipts.badge`. Caller evidence always uses the cooperative path; observe and recheck use connectors configured locally at startup.
 

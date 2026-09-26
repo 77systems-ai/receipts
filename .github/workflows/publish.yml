@@ -1,26 +1,59 @@
 name: Publish
 
+# Runs only when a maintainer pushes a v* tag. The `npm-publish` environment is the approval
+# gate: add required reviewers to it in the repository settings so a tag alone cannot publish.
 on:
   push:
     tags: ["v*"]
 
 permissions:
   contents: read
-  id-token: write # OIDC for npm trusted publishing (no tokens stored)
+  id-token: write # OIDC: npm trusted publishing and provenance attestations; no long-lived token stored.
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: npm-publish
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs a newer npm CLI than the one bundled with Node 22.
+      - run: npm install -g npm@latest
       - run: npm ci
-      - run: npm test
-      - name: Publish public workspaces
+      - name: Tag matches every publishable package version
         run: |
-          for pkg in receipts-core receipts-mcp receipts-sdk receipts-rest receipts-claude-plugin; do
-            npm publish -w @77systems/$pkg --provenance --access public
+          node -e '
+            const {execSync} = require("node:child_process");
+            const tag = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+            const pkgs = JSON.parse(execSync("npm query .workspace --json")).filter(p => !p.private);
+            const wrong = pkgs.filter(p => p.version !== tag).map(p => `${p.name}@${p.version}`);
+            if (wrong.length) { console.error(`Tag v${tag} does not match: ${wrong.join(", ")}`); process.exit(1); }
+            console.log(`All ${pkgs.length} publishable packages are ${tag}.`);
+          '
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run demo
+      - run: npm run pack:check
+      - name: Publish in dependency order
+        # Dependencies before dependents, so no published version ever references a missing one.
+        # The guard above proved every package equals the tag. Already-published versions are
+        # skipped, so a partially failed run can be resumed by re-running the job.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for pkg in receipts-core receipts-sdk receipts-proof receipts-otel receipts-conformance \
+                     receipts-github receipts-file receipts-gmail \
+                     receipts-mcp receipts-rest receipts-claude-plugin; do
+            name="@77systems/$pkg"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published; skipping."
+            else
+              npm publish -w "$name" --provenance --access public
+            fi
           done

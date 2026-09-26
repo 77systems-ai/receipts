@@ -244,6 +244,22 @@ test('CLI fails closed on invalid policy, signing key, and TTL configuration wit
   }
 });
 
+test('CLI refuses to start a file connector without allowed roots or a half-configured Gmail connector', () => {
+  for (const [env, message] of [
+    [{ RECEIPTS_FILE_ACCOUNT: 'local:file' }, /RECEIPTS_FILE_ROOTS is required/],
+    [{ RECEIPTS_GMAIL_TOKEN: 'gmail-token-must-not-echo' }, /RECEIPTS_GMAIL_ACCOUNT is required/],
+    [{ RECEIPTS_GMAIL_ACCOUNT: 'me@example.com' }, /RECEIPTS_GMAIL_TOKEN is required/],
+    [{ RECEIPTS_FILE_ROOTS: 'relative/root' }, /invalid_file_roots|absolute/],
+  ] as const) {
+    const run = spawnSync(process.execPath, [cli], { encoding: 'utf8', env: childEnv(env), timeout: 15000, input: '' });
+    assert.equal(run.status, 1);
+    const error = JSON.parse(run.stderr.trim().split('\n').at(-1)!).error;
+    assert.equal(error.code, 'startup_failed');
+    assert.match(error.message, message);
+    assert.ok(!run.stderr.includes('gmail-token-must-not-echo'));
+  }
+});
+
 test('doctor boots through an executable link and checks credentials without exposing values', { timeout: 20000 }, async t => {
   // npm ci runs before dist exists in a fresh source checkout, so it need not
   // create workspace bin links. Reproduce the installed package's link explicitly.
@@ -291,9 +307,9 @@ test('bug-report assembles a redacted support bundle and never emits values, ide
   const actionId = '00000000-0000-4000-8000-00000000c0de';
   const privateDigest = `sha256:${'c'.repeat(64)}`;
   store.append(createAuditEntry({ surface: 'social-publish', attemptId: 'private-attempt-55', actionId, destinationAccount: privateAccount, approvalId: 'private-approval-77', packageDigest: privateDigest, writeMayHaveHappened: true }, 'attempt'));
-  const secrets = ['bug-report-secret-token-3e1', 'secretowner/secretrepo', 'private-segment-7f3a', privateAccount, actionId, privateDigest, 'private-attempt-55', 'private-approval-77', '/policy/private-policy.json', '/keys/private-signing-key.pem'];
+  const secrets = ['bug-report-secret-token-3e1', 'secretowner/secretrepo', 'private-segment-7f3a', privateAccount, actionId, privateDigest, 'private-attempt-55', 'private-approval-77', '/policy/private-policy.json', '/keys/private-signing-key.pem', 'ya29.gmail-secret-token-9d2'];
   const env = { ...childEnv(), GITHUB_TOKEN: secrets[0]!, GH_TOKEN: '', RECEIPTS_GITHUB_REPO: secrets[1]!, RECEIPTS_AUDIT_PATH: auditPath,
-    RECEIPTS_POLICY_PATH: secrets[8]!, RECEIPTS_SIGNING_KEY_PATH: secrets[9]!, RECEIPTS_CLAIM_TTL_MS: '', RECEIPTS_HOOK_TOOLS: '' };
+    RECEIPTS_POLICY_PATH: secrets[8]!, RECEIPTS_SIGNING_KEY_PATH: secrets[9]!, RECEIPTS_CLAIM_TTL_MS: '', RECEIPTS_HOOK_TOOLS: '', RECEIPTS_GMAIL_TOKEN: secrets[10]! };
   const run = spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor','--tail','5'], { encoding:'utf8', env, timeout:20000 });
   assert.equal(run.status,0,run.stderr);
   const report = JSON.parse(run.stdout);
@@ -304,6 +320,8 @@ test('bug-report assembles a redacted support bundle and never emits values, ide
   assert.equal(report.bundle.configuration.GH_TOKEN,'absent');
   assert.equal(report.bundle.configuration.RECEIPTS_POLICY_PATH,'present');
   assert.equal(report.bundle.configuration.RECEIPTS_CLAIM_TTL_MS,'absent');
+  assert.equal(report.bundle.configuration.RECEIPTS_GMAIL_TOKEN,'present');
+  assert.equal(report.bundle.configuration.RECEIPTS_FILE_ROOTS,'absent');
   assert.equal(report.bundle.packages['@77systems/receipts-mcp'],'0.3.0');
   assert.equal(report.bundle.doctor,null);
   assert.deepEqual({ ...report.bundle.audit, tail: undefined }, { location:'environment', exists:true, entries:1, headCheckpoint:true, chain:'valid', tail:undefined });
@@ -335,7 +353,7 @@ test('bug-report assembles a redacted support bundle and never emits values, ide
   assert.deepEqual({ exists: absent.bundle.audit.exists, chain: absent.bundle.audit.chain, entries: absent.bundle.audit.entries }, { exists:false, chain:'absent', entries:null });
   // With the doctor included, the bundle embeds the same machine-readable checks.
   // The doctor boots the real server, so the bogus policy and key paths above would (correctly) fail startup; clear them here.
-  const full = JSON.parse(spawnSync(process.execPath,[receipts,'bug-report','--json'], { encoding:'utf8', env: { ...env, RECEIPTS_AUDIT_PATH: auditPath, RECEIPTS_POLICY_PATH: '', RECEIPTS_SIGNING_KEY_PATH: '' }, timeout:25000 }).stdout);
+  const full = JSON.parse(spawnSync(process.execPath,[receipts,'bug-report','--json'], { encoding:'utf8', env: { ...env, RECEIPTS_AUDIT_PATH: auditPath, RECEIPTS_POLICY_PATH: '', RECEIPTS_SIGNING_KEY_PATH: '', RECEIPTS_GMAIL_TOKEN: '' }, timeout:25000 }).stdout);
   assert.ok(full.bundle.doctor.checks.some((check: {name:string;ok:boolean}) => check.name === 'mcp_tools' && check.ok));
   assert.match(full.body,/\| mcp_tools \| ok \|/);
   for (const secret of secrets) assert.ok(!JSON.stringify(full).includes(secret));

@@ -11,6 +11,7 @@ export const ISSUES_URL = 'https://github.com/77systems-ai/receipts/issues/new';
 export const CONFIGURATION_KEYS = [
   'RECEIPTS_AUDIT_PATH', 'RECEIPTS_GITHUB_REPO', 'GITHUB_TOKEN', 'GH_TOKEN',
   'RECEIPTS_POLICY_PATH', 'RECEIPTS_CLAIM_TTL_MS', 'RECEIPTS_SIGNING_KEY_PATH', 'RECEIPTS_HOOK_TOOLS',
+  'RECEIPTS_GMAIL_ACCOUNT', 'RECEIPTS_GMAIL_TOKEN', 'RECEIPTS_FILE_ACCOUNT', 'RECEIPTS_FILE_ROOTS',
 ] as const;
 /** Tail fields are allowlisted against core's known vocabularies; anything else, including a corrupt or hand-edited line, renders as `invalid`. */
 const EVENTS = new Set(['attempt', 'classification', 'observation', 'binding', 'recheck', 'claim', 'claim_expired', 'claim_released', 'claim_completed', 'policy_denied', 'duplicate']);

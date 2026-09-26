@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -118,4 +118,48 @@ test('File destinationId matches the registered file-write surface pattern', asy
     request('local:file', path, digestPayload(filePayload(path, CONTENT))),
   );
   assert.match(observed.destinationId, /^file:\/[^\u0000\r\n]+$/);
+});
+
+const read = (connector: TrustedConnector, path: string, approved: string) =>
+  connector.read(request('local:file', path, digestPayload(filePayload(path, approved))));
+
+test('File never lets invalid UTF-8 or a byte-order mark collide with approved text', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'receipts-file-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const connector = createFileConnector({ roots: [dir] });
+  const binary = join(dir, 'binary');
+  writeFileSync(binary, Buffer.from([0xff]));
+  // Lossy decoding would turn 0xFF into U+FFFD and falsely match approved "\uFFFD".
+  const observed = await read(connector, binary, '\uFFFD');
+  assert.notEqual(observed.packageDigest, digestPayload(filePayload(binary, '\uFFFD')));
+  assert.equal(observed.destinationId, `file:${binary}`, 'the object exists; only its content cannot be approved text');
+  const bom = join(dir, 'bom.txt');
+  writeFileSync(bom, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('text')]));
+  assert.notEqual((await read(connector, bom, 'text')).packageDigest, digestPayload(filePayload(bom, 'text')));
+  assert.equal((await read(connector, bom, '\uFEFFtext')).packageDigest, digestPayload(filePayload(bom, '\uFEFFtext')));
+});
+
+test('File reads only regular files within the size limit', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'receipts-file-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const folder = join(dir, 'folder');
+  mkdirSync(folder);
+  await assert.rejects(() => read(createFileConnector({ roots: [dir] }), folder, ''), { code: 'object_mismatch' });
+  const big = join(dir, 'big.txt');
+  writeFileSync(big, 'x'.repeat(64));
+  await assert.rejects(() => read(createFileConnector({ roots: [dir], maxBytes: 32 }), big, 'x'.repeat(64)), { code: 'file_too_large' });
+  assert.equal((await read(createFileConnector({ roots: [dir], maxBytes: 64 }), big, 'x'.repeat(64))).packageDigest, digestPayload(filePayload(big, 'x'.repeat(64))));
+});
+
+test('File admits files under a symlinked root and rejects relative or empty roots', async t => {
+  const base = mkdtempSync(join(tmpdir(), 'receipts-file-root-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  mkdirSync(join(base, 'real'));
+  symlinkSync(join(base, 'real'), join(base, 'link'));
+  const path = join(base, 'link', 'note.txt');
+  writeFileSync(path, CONTENT);
+  const observed = await read(createFileConnector({ roots: [join(base, 'link')] }), path, CONTENT);
+  assert.equal(observed.packageDigest, digestPayload(filePayload(path, CONTENT)));
+  for (const roots of [['relative/root'], []]) assert.throws(() => createFileConnector({ roots }), { code: 'invalid_file_roots' });
+  assert.throws(() => createFileConnector({ accountId: 'bad\naccount' }), { code: 'invalid_file_account' });
 });
