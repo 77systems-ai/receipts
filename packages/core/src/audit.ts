@@ -186,6 +186,9 @@ function validateAdmissionEntry(entry: AuditEntry, previous: readonly AuditEntry
     if (Date.parse(entry.timestamp) < Date.parse(lease.expiresAt)) invalid("A live lease cannot expire early.");
   } else if (Date.parse(entry.timestamp) >= Date.parse(lease.expiresAt)) invalid("An expired lease cannot authorize a change.");
   if (entry.event === "attempt" && (entry.writeMayHaveHappened !== true || entry.verdict !== "delivery_unknown")) invalid("Dispatch must durably record execution uncertainty.");
+  if (entry.event === "attempt" && action.some((item) => item.event === "attempt" || item.writeMayHaveHappened === true || item.destinationId !== undefined)) {
+    invalid("A dispatch cannot follow a possible or observed write for this action.");
+  }
 }
 
 function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void {
@@ -221,6 +224,12 @@ function validateEntry(entry: AuditEntry, previous: readonly AuditEntry[]): void
     && item.actionId?.toLowerCase() === entry.actionId?.toLowerCase() && item.attemptId !== entry.attemptId
     && (item.writeMayHaveHappened || item.destinationId || item.verdict !== "prewrite"))) {
     throw new ReceiptsError("duplicate_attempt", "This action already has a possible write. Observe the existing destination instead.");
+  }
+  // One approval authorizes one action: a chain holding possible writes for two actions under it is rejected.
+  if (entry.event === "attempt" && entry.approvalId !== undefined && previous.some((item) => item.destinationAccount === entry.destinationAccount
+    && item.approvalId === entry.approvalId && item.actionId !== undefined && item.actionId.toLowerCase() !== entry.actionId?.toLowerCase()
+    && (item.event === "attempt" || item.writeMayHaveHappened || item.destinationId))) {
+    throw new ReceiptsError("approval_reused", "This approval already has a possible write for another action.");
   }
   if (classification.mayRearm) {
     const priorAttempt = previous.filter((item) => item.attemptId === entry.rearm!.previousAttemptId);
@@ -394,6 +403,12 @@ export async function observeDestination(connector: DestinationConnector, reques
   const attempt = history.find((entry) => entry.attemptId === snapshot.attemptId);
   if (attempt && (!sameScope(attempt, snapshot) || attempt.packageDigest !== snapshot.packageDigest || attempt.approvalId !== snapshot.approvalId)) {
     throw new ReceiptsError("invalid_entry", "A connector read cannot change the approved action identity.");
+  }
+  // A leased action is read back under the attempt that dispatched it. Binding it under a
+  // foreign attempt would strand the lease: it could never complete or be re-observed.
+  const dispatched = history.filter((entry) => entry.registry && entry.event !== "policy_denied" && sameScope(entry, { ...snapshot, surface: entry.surface })).at(-1);
+  if (dispatched && (dispatched.event === "attempt" || dispatched.event === "claim_completed") && dispatched.attemptId !== snapshot.attemptId) {
+    throw new ReceiptsError("attempt_mismatch", "This action was dispatched under a different attempt. Read it back with the original attemptId.");
   }
   const originalBinding = history.find((entry) => entry.event === "binding" && sameScope(entry, snapshot)
     && entry.attemptId === snapshot.attemptId && entry.packageDigest === snapshot.packageDigest

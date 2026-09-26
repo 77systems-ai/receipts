@@ -360,6 +360,40 @@ test('registry completion survives SDK restart after destination read-back', asy
   assert.ok(store.read().every(entry=>!('token' in (entry.registry??{}))));
 });
 
+test('a budget consumed between claim and dispatch is denied at dispatch and the unused reservation is released, freeing its approval',async()=>{
+ const {MemoryAuditStore,createIdempotencyRegistry}=await import('@77systems/receipts-core');
+ const {PolicyDeniedError}=await import('../src/index.js');
+ const base=new MemoryAuditStore();const name=surface();
+ const policy={rateLimits:[{id:'one-dispatch',maxWrites:1,windowMs:60_000,surface:name}]};
+ const mine={...identity(),surface:name,attemptId:'raced-then-released'};
+ let injected=false;
+ const store:AuditStore={
+  read(){
+   const entries=base.read();
+   if(!injected&&entries.some(entry=>entry.event==='claim'&&entry.actionId===mine.actionId)){
+    injected=true;
+    const competitor=createIdempotencyRegistry({store:base});
+    const lease=competitor.claim({...mine,...identity(),attemptId:'competitor',packageDigest:digestPayload({other:true})},policy);
+    if(lease.verdict!=='CLAIMED')throw new Error('competitor must claim');
+    competitor.dispatch(lease.claim,policy);
+    return base.read();
+   }
+   return entries;
+  },
+  append(entry,expectedLength){base.append(entry,expectedLength);},
+ };
+ let writes=0;
+ await assert.rejects(createReceipts({store,policy}).execute({...mine,payload:{approved:true},execute(){writes++;}}),error=>error instanceof PolicyDeniedError&&error.ruleId==='one-dispatch');
+ assert.equal(writes,0);
+ assert.deepEqual(base.read().filter(entry=>entry.actionId===mine.actionId).map(entry=>entry.event),['claim','policy_denied','claim_released']);
+ // The approval is free again: once the window passes, the same approval and action can proceed.
+ const later=createIdempotencyRegistry({store:base,now:()=>Date.now()+61_000});
+ const retry=later.claim({surface:name,attemptId:'after-window',actionId:mine.actionId,destinationAccount:mine.destinationAccount,approvalId:mine.approvalId,packageDigest:digestPayload({approved:true})},policy);
+ assert.equal(retry.verdict,'CLAIMED');
+ if(retry.verdict!=='CLAIMED')throw new Error('expected claim');
+ assert.equal(later.dispatch(retry.claim,policy).verdict,'AUTHORIZED');
+});
+
 test('a budget consumed between claim and dispatch is denied at dispatch; a failed release keeps the named outcome',async()=>{
  const {MemoryAuditStore,ReceiptsError,createIdempotencyRegistry}=await import('@77systems/receipts-core');
  const {PolicyDeniedError}=await import('../src/index.js');

@@ -12,6 +12,13 @@ export const CONFIGURATION_KEYS = [
   'RECEIPTS_AUDIT_PATH', 'RECEIPTS_GITHUB_REPO', 'GITHUB_TOKEN', 'GH_TOKEN',
   'RECEIPTS_POLICY_PATH', 'RECEIPTS_CLAIM_TTL_MS', 'RECEIPTS_SIGNING_KEY_PATH', 'RECEIPTS_HOOK_TOOLS',
 ] as const;
+/** Tail fields are allowlisted against core's known vocabularies; anything else, including a corrupt or hand-edited line, renders as `invalid`. */
+const EVENTS = new Set(['attempt', 'classification', 'observation', 'binding', 'recheck', 'claim', 'claim_expired', 'claim_released', 'claim_completed', 'policy_denied', 'duplicate']);
+const VERDICTS = new Set(['prewrite', 'delivery_unknown', 'package_unverified', 'complete']);
+const ADMISSION = new Set(['CLAIMED', 'AUTHORIZED', 'DUPLICATE', 'policy_denied', 'RELEASED', 'COMPLETED', 'EXPIRED']);
+const SOURCES = new Set(['host-supplied', 'receipts-read']);
+const SURFACE = /^[a-z][a-z0-9-]{0,79}$/;
+const known = (value: unknown, allowed: Set<string>): string => typeof value === 'string' && allowed.has(value) ? value : 'invalid';
 /** GitHub's new-issue form accepts roughly 8 KiB of URL; longer bodies are pasted from the terminal instead. */
 const MAX_URL_LENGTH = 8000;
 
@@ -78,16 +85,16 @@ function auditHealth(options: BugReportOptions, env: NodeJS.ProcessEnv): AuditHe
     // slice(-0) would return every line; zero means no table at all.
     for (const line of tail === 0 ? [] : lines.slice(-tail)) {
       let envelope: { sequence?: unknown; entry?: Record<string, unknown> & { admission?: { verdict?: unknown } } };
-      try { envelope = JSON.parse(line); } catch { health.tail.push({ sequence: -1, timestamp: '', event: 'unparseable', verdict: '', surface: '', admission: null, evidenceSource: '' }); continue; }
+      try { envelope = JSON.parse(line); } catch { health.tail.push({ sequence: -1, timestamp: 'invalid', event: 'unparseable', verdict: 'invalid', surface: 'invalid', admission: null, evidenceSource: 'invalid' }); continue; }
       const entry = envelope.entry ?? {};
       health.tail.push({
-        sequence: typeof envelope.sequence === 'number' ? envelope.sequence : -1,
-        timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : '',
-        event: typeof entry.event === 'string' ? entry.event : '',
-        verdict: typeof entry.verdict === 'string' ? entry.verdict : '',
-        surface: typeof entry.surface === 'string' ? entry.surface : '',
-        admission: typeof entry.admission?.verdict === 'string' ? entry.admission.verdict : null,
-        evidenceSource: typeof entry.evidenceSource === 'string' ? entry.evidenceSource : 'host-supplied',
+        sequence: Number.isSafeInteger(envelope.sequence) ? envelope.sequence as number : -1,
+        timestamp: typeof entry.timestamp === 'string' && Number.isFinite(Date.parse(entry.timestamp)) ? new Date(entry.timestamp).toISOString() : 'invalid',
+        event: known(entry.event, EVENTS),
+        verdict: known(entry.verdict, VERDICTS),
+        surface: typeof entry.surface === 'string' && SURFACE.test(entry.surface) ? entry.surface : 'invalid',
+        admission: entry.admission === undefined ? null : known(entry.admission?.verdict, ADMISSION),
+        evidenceSource: entry.evidenceSource === undefined ? 'host-supplied' : known(entry.evidenceSource, SOURCES),
       });
     }
   } catch { health.chain = 'unreadable'; return health; }

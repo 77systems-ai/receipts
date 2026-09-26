@@ -16,6 +16,12 @@ import { digestPayload } from '@77systems/receipts-sdk';
 import { generateReceiptKeyPair, verifySignedReceipt } from '@77systems/receipts-proof';
 import { createReceiptsServer, startHttpServer } from '../dist/index.js';
 
+/** Child processes start from the runner's environment minus every Receipts setting, so a developer's exports cannot change behavior under test. */
+function childEnv(overrides: Record<string, string> = {}): Record<string, string> {
+  const base = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
+    typeof entry[1] === 'string' && !/^RECEIPTS_/.test(entry[0]) && !['GITHUB_TOKEN', 'GH_TOKEN'].includes(entry[0])));
+  return { ...base, ...overrides };
+}
 const digest = `sha256:${'a'.repeat(64)}`;
 const write = { surface: 'social-publish', attemptId: 'attempt-1', actionId: '00000000-0000-4000-8000-000000000001', destinationAccount: 'demo:account', approvalId: 'approval-1', packageDigest: digest, writeMayHaveHappened: true };
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
@@ -134,7 +140,7 @@ test('stdio boots, lists exactly fourteen tools, and reconciles a guarded write 
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [cli],
-    env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')), RECEIPTS_AUDIT_PATH: join(directory, 'audit.jsonl') },
+    env: { ...childEnv(), RECEIPTS_AUDIT_PATH: join(directory, 'audit.jsonl') },
     stderr: 'pipe',
   });
   try {
@@ -229,7 +235,7 @@ test('CLI fails closed on invalid policy, signing key, and TTL configuration wit
     assert.equal(run.stdout, '', 'stdout stays reserved for MCP');
     if (secret) assert.ok(!run.stderr.includes(secret), `${args.join(' ')} must not echo file contents`);
   }
-  const base = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  const base = childEnv();
   for (const env of [{ RECEIPTS_POLICY_PATH: brokenPolicy }, { RECEIPTS_SIGNING_KEY_PATH: notAKey }, { RECEIPTS_CLAIM_TTL_MS: '-1' }]) {
     const run = spawnSync(process.execPath, [cli], { encoding: 'utf8', env: { ...base, ...env }, timeout: 15000 });
     assert.equal(run.status, 1, JSON.stringify(env));
@@ -246,7 +252,7 @@ test('doctor boots through an executable link and checks credentials without exp
   const doctor = join(directory,'receipts');
   await symlink(fileURLToPath(new URL('../dist/receipts.js', import.meta.url)),doctor);
   const secret = 'sensitive-doctor-test-token';
-  const configured = { ...process.env,GITHUB_TOKEN:secret,RECEIPTS_GITHUB_REPO:'fixture/test' };
+  const configured = { ...childEnv(),GITHUB_TOKEN:secret,RECEIPTS_GITHUB_REPO:'fixture/test' };
   const run = spawnSync(process.execPath,[doctor,'doctor','--json'], { encoding:'utf8', env: configured, timeout:15000 });
   assert.equal(run.status,0,run.stderr);
   const report = JSON.parse(run.stdout);
@@ -263,10 +269,10 @@ test('doctor boots through an executable link and checks credentials without exp
   assert.match(human.stdout,/Result: ok/);
   assert.throws(() => JSON.parse(human.stdout));
   assert.ok(!human.stdout.includes(secret));
-  const missing = spawnSync(process.execPath,[doctor,'doctor','--json'], { encoding:'utf8', env: { ...process.env,GITHUB_TOKEN:'',GH_TOKEN:'',RECEIPTS_GITHUB_REPO:'' }, timeout:15000 });
+  const missing = spawnSync(process.execPath,[doctor,'doctor','--json'], { encoding:'utf8', env: { ...childEnv(),GITHUB_TOKEN:'',GH_TOKEN:'',RECEIPTS_GITHUB_REPO:'' }, timeout:15000 });
   assert.equal(missing.status,1);
   assert.equal(JSON.parse(missing.stdout).checks.find((check: {name:string}) => check.name === 'github_credentials').ok,false);
-  assert.match(spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: { ...process.env,GITHUB_TOKEN:'',GH_TOKEN:'',RECEIPTS_GITHUB_REPO:'' }, timeout:15000 }).stdout,/FAIL {2}github_credentials/);
+  assert.match(spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: { ...childEnv(),GITHUB_TOKEN:'',GH_TOKEN:'',RECEIPTS_GITHUB_REPO:'' }, timeout:15000 }).stdout,/FAIL {2}github_credentials/);
   for (const args of [[], ['nonsense'], ['doctor','--verbose']]) {
     const bad = spawnSync(process.execPath,[doctor,...args], { encoding:'utf8', env: configured, timeout:15000 });
     assert.equal(bad.status,1);
@@ -286,7 +292,7 @@ test('bug-report assembles a redacted support bundle and never emits values, ide
   const privateDigest = `sha256:${'c'.repeat(64)}`;
   store.append(createAuditEntry({ surface: 'social-publish', attemptId: 'private-attempt-55', actionId, destinationAccount: privateAccount, approvalId: 'private-approval-77', packageDigest: privateDigest, writeMayHaveHappened: true }, 'attempt'));
   const secrets = ['bug-report-secret-token-3e1', 'secretowner/secretrepo', 'private-segment-7f3a', privateAccount, actionId, privateDigest, 'private-attempt-55', 'private-approval-77', '/policy/private-policy.json', '/keys/private-signing-key.pem'];
-  const env = { ...process.env, GITHUB_TOKEN: secrets[0]!, GH_TOKEN: '', RECEIPTS_GITHUB_REPO: secrets[1]!, RECEIPTS_AUDIT_PATH: auditPath,
+  const env = { ...childEnv(), GITHUB_TOKEN: secrets[0]!, GH_TOKEN: '', RECEIPTS_GITHUB_REPO: secrets[1]!, RECEIPTS_AUDIT_PATH: auditPath,
     RECEIPTS_POLICY_PATH: secrets[8]!, RECEIPTS_SIGNING_KEY_PATH: secrets[9]!, RECEIPTS_CLAIM_TTL_MS: '', RECEIPTS_HOOK_TOOLS: '' };
   const run = spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor','--tail','5'], { encoding:'utf8', env, timeout:20000 });
   assert.equal(run.status,0,run.stderr);
@@ -369,10 +375,18 @@ test('observing a destination for a claim that was never dispatched completes no
     assert.deepEqual(observed.structuredContent?.warnings, ['claim_not_dispatched']);
     assert.equal(store.read().filter(entry => entry.event === 'attempt').length, 0);
     assert.equal(store.read().filter(entry => entry.event === 'claim_completed').length, 0);
-    // The binding still fails closed: the action cannot be reclaimed and written again.
+    // The reservation is spent: it can neither dispatch (which would license a second write) nor release, and any reclaim is DUPLICATE.
+    const lease0 = claimed.structuredContent?.claim as ClaimLease;
+    const dispatched = await client.callTool({ name: 'receipts.dispatch', arguments: { claim: lease0 } });
+    assert.equal(dispatched.isError, true);
+    assert.equal((dispatched.structuredContent?.error as { code: string }).code, 'duplicate_attempt');
+    assert.equal((await client.callTool({ name: 'receipts.release', arguments: { claim: lease0 } })).isError, true);
+    assert.equal(store.read().filter(entry => entry.event === 'attempt').length, 0, 'no second write was authorized');
     const again = await client.callTool({ name: 'receipts.claim', arguments: { action: { ...action, attemptId: 'after-bypass' } } });
     assert.equal(again.structuredContent?.verdict, 'DUPLICATE');
     assert.equal(again.structuredContent?.reason, 'completed');
+    assert.match(String(again.structuredContent?.hint), /Report the existing receipt/);
+    assert.equal(again.structuredContent?.docs, 'https://github.com/77systems-ai/receipts/blob/main/docs/ERRORS.md#completed');
     // A properly dispatched attempt emits no warning.
     const clean: ApprovedAction = { ...action, actionId: '00000000-0000-4000-8000-00000000c1ea', attemptId: 'dispatched-attempt', approvalId: 'approval-dispatched' };
     const lease = (await client.callTool({ name: 'receipts.claim', arguments: { action: clean } })).structuredContent?.claim as ClaimLease;
@@ -507,7 +521,7 @@ test('stdio applies a host policy file, claim TTL, and signing key from CLI flag
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [cli, '--audit-path', auditPath, '--policy', policyPath, '--claim-ttl', '5000', '--signing-key', keyPath],
-    env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    env: childEnv(),
     stderr: 'pipe',
   });
   let stderr = '';
@@ -579,4 +593,53 @@ test('server construction fails closed on invalid policy, TTL, or signing key be
   assert.throws(() => createReceiptsServer({ store: new MemoryAuditStore(), signingKey: generateKeyPairSync('x25519').privateKey }), errorCode('invalid_signing_key'));
   await assert.rejects(startHttpServer({ port: 0, store: new MemoryAuditStore(), policy: { defaultEffect: 'maybe' as 'block' } }), errorCode('invalid_policy'));
   await assert.rejects(startHttpServer({ port: 0, store: new MemoryAuditStore(), signingKey: 'not a key' }), errorCode('invalid_signing_key'));
+});
+
+test('a leased action is read back only under the attempt that dispatched it; a foreign attempt is refused before any read', async () => {
+  const store = new MemoryAuditStore();
+  const action: ApprovedAction = { surface: 'social-publish', attemptId: 'dispatched-original', actionId: '00000000-0000-4000-8000-00000000f0e1', destinationAccount: 'demo:account', approvalId: 'approval-foreign', packageDigest: digest };
+  let reads = 0;
+  const running = await startHttpServer({ port: 0, store, connectors: [{ surface: action.surface, read: async () => { reads++; return { destinationAccount: action.destinationAccount, destinationId: 'post-foreign', packageDigest: digest, observedAt: '2026-09-25T10:42:00.000Z' }; } }] });
+  const client = new Client({ name: 'foreign-attempt-test', version: '1.0.0' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(running.url)));
+    const lease = (await client.callTool({ name: 'receipts.claim', arguments: { action } })).structuredContent?.claim as ClaimLease;
+    assert.equal((await client.callTool({ name: 'receipts.dispatch', arguments: { claim: lease } })).structuredContent?.verdict, 'AUTHORIZED');
+    const foreign = await client.callTool({ name: 'receipts.observe', arguments: { request: { ...action, attemptId: 'someone-elses-attempt' } } });
+    assert.equal(foreign.isError, true);
+    assert.equal((foreign.structuredContent?.error as { code: string }).code, 'attempt_mismatch');
+    assert.equal(reads, 0, 'refused before the connector read');
+    assert.equal(store.read().filter(entry => entry.event === 'observation').length, 0);
+    const original = await client.callTool({ name: 'receipts.observe', arguments: { request: action } });
+    assert.equal((original.structuredContent?.admission as { verdict: string }).verdict, 'COMPLETED');
+    assert.equal(reads, 1);
+  } finally { await client.close(); await running.close(); }
+});
+
+test('bug-report renders corrupt audit lines by allowlisted shape only and never echoes argument values', { timeout: 30000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'receipts-bug-report-shape-'));
+  t.after(() => rm(directory, {recursive:true,force:true}));
+  const receipts = join(directory,'receipts');
+  await symlink(fileURLToPath(new URL('../dist/receipts.js', import.meta.url)),receipts);
+  const auditPath = join(directory,'audit.jsonl');
+  const junk = 'https://evil.example/?token=leaked-through-shape-field';
+  // A hand-edited line: every shape field carries text that must never reach the report.
+  await writeFile(auditPath, `${JSON.stringify({ version: 1, sequence: 'one', previousHash: null, hash: 'x', entry: { timestamp: junk, event: junk, verdict: junk, surface: junk, admission: { verdict: junk }, evidenceSource: junk } })}\n`);
+  const env = childEnv({ RECEIPTS_AUDIT_PATH: auditPath });
+  const run = spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor'], { encoding:'utf8', env, timeout:20000 });
+  assert.equal(run.status,0,run.stderr);
+  assert.ok(!run.stdout.includes('leaked-through-shape-field'));
+  const report = JSON.parse(run.stdout);
+  assert.equal(report.bundle.audit.chain,'audit_corrupt');
+  assert.deepEqual(report.bundle.audit.tail, [{ sequence: -1, timestamp: 'invalid', event: 'invalid', verdict: 'invalid', surface: 'invalid', admission: 'invalid', evidenceSource: 'invalid' }]);
+  for (const args of [['bug-report','--token=ghp_should_not_echo','--no-doctor'], ['doctor','--audit-path=/private/should-not-echo'], ['/private/command-should-not-echo']]) {
+    const bad = spawnSync(process.execPath,[receipts,...args], { encoding:'utf8', env, timeout:20000 });
+    assert.equal(bad.status,1);
+    assert.ok(!`${bad.stdout}${bad.stderr}`.includes('should_not_echo') && !`${bad.stdout}${bad.stderr}`.includes('should-not-echo'), `echoed a value for ${args[0]}`);
+    assert.match(bad.stderr,/Usage:/);
+  }
+  // The split form of a known option still works.
+  const split = JSON.parse(spawnSync(process.execPath,[receipts,'bug-report','--json','--no-doctor',`--audit-path=${auditPath}`,'--tail=0'], { encoding:'utf8', env: childEnv(), timeout:20000 }).stdout);
+  assert.equal(split.bundle.audit.location,'flag');
+  assert.deepEqual(split.bundle.audit.tail,[]);
 });

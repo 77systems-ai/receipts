@@ -80,9 +80,9 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 ### duplicate_attempt
 
-**Probable cause.** A new execution attempt was recorded for an account and action that already has a possible write under another attempt.
+**Probable cause.** An execution attempt was recorded, or a reservation was dispatched or released, for an account and action that already has a possible or observed write (including a write made without dispatch and then observed).
 
-**Suggested fix.** Reconcile the existing attempt by reading the destination and binding it. Never start a second write for the same approved action.
+**Suggested fix.** Reconcile the existing write by reading the destination back and binding it. Never start a second write for the same approved action; a reservation that outlives its write is spent, not reusable.
 
 ### ambiguous_destination
 
@@ -198,9 +198,9 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 ### active_claim
 
-**Probable cause.** DUPLICATE reason: another live (unexpired, unreleased) reservation holds this account and action.
+**Probable cause.** DUPLICATE reason: another live (unexpired, unreleased) reservation holds this account and action. Nothing has been written yet.
 
-**Suggested fix.** Wait for that owner to dispatch, release, or expire. Do not write; do not create a new action to work around the reservation.
+**Suggested fix.** Wait for that owner to dispatch, release, or expire, then claim again if the write is still wanted. Do not write, do not observe a destination that does not exist, and do not mint a new actionId to work around the reservation.
 
 ### dispatched
 
@@ -216,9 +216,9 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 ### approval_reused
 
-**Probable cause.** DUPLICATE reason: the approvalId was already spent on a different action for this account, by a possible write or a live reservation. Released or expired unused reservations do not spend an approval.
+**Probable cause.** The approvalId was already spent on a different action for this account, by a possible write or a reservation that is not durably released or expired. Returned as a DUPLICATE reason at claim, thrown at dispatch, and rejected by the audit validator when a chain holds possible writes for two actions under one approval.
 
-**Suggested fix.** Obtain a new approval for the new action. If the earlier action was abandoned, release its reservation (or let it expire) and claim again.
+**Suggested fix.** Nothing was written for this action. Obtain a new approval for it, or if the earlier action was abandoned, release its reservation (or let it expire and be recorded) and claim again.
 
 ## Destination connector reads
 
@@ -245,6 +245,12 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 **Probable cause.** The connector read a different object than requested, the locator and destinationId disagree, the observed record does not match the requested repository and object, an immutable ID changed, or a completed action was asked to switch objects.
 
 **Suggested fix.** Supply the exact observed destinationId or its locator. Do not reuse an ID from another object.
+
+### attempt_mismatch
+
+**Probable cause.** observeDestination or receipts.observe/recheck was asked to read an action back under an attemptId different from the attempt that dispatched or completed it. Binding under a foreign attempt would strand the dispatched lease.
+
+**Suggested fix.** Read the destination back with the original attemptId of the dispatched attempt. A new attempt for the same action is not a new write.
 
 ### invalid_observation
 
@@ -362,9 +368,9 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 ### internal_error
 
-**Probable cause.** An unexpected non-Receipts error occurred while handling a tool call or request. Its message is deliberately withheld from the response.
+**Probable cause.** An unexpected non-Receipts error occurred while handling a tool call or request. Its message is deliberately withheld from the response; the server writes only the error class name to its stderr.
 
-**Suggested fix.** Check the server's stderr locally, then report it with `receipts bug-report`. Do not assume the operation succeeded.
+**Suggested fix.** Check the server's stderr locally for the error class, reproduce, then report it with `receipts bug-report`. Do not assume the operation succeeded.
 
 ## REST transport
 
@@ -408,7 +414,7 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 ### invalid_public_key
 
-**Probable cause.** The trusted public key is not an Ed25519 public key (PEM or KeyObject).
+**Probable cause.** renderReceiptBadge received a trustedPublicKey that is not an Ed25519 public key (PEM or KeyObject). verifySignedReceipt folds the same condition into its generic invalid_proof result.
 
 **Suggested fix.** Pass the publisher's Ed25519 SPKI public key PEM obtained from a trusted channel.
 

@@ -83,10 +83,10 @@ Evidence tools:
 | Tool | Arguments | Result | Refusals |
 | --- | --- | --- | --- |
 | `receipts.classify` | `{ "write": OutwardWrite }` | Verdict, retry law, and permission booleans. | `not_a_destination_write`, `invalid_entry` |
-| `receipts.record` | `{ "entry": AuditEntry }` | `{ "recorded": true, "id": "…" }` | `action_identity_required`, `invalid_entry`, `protected_admission` |
+| `receipts.record` | `{ "entry": AuditEntry }` | `{ "recorded": true, "id": "…" }` | `action_identity_required`, `invalid_entry` (lifecycle fields are refused earlier by the strict wire schema as an input-validation error) |
 | `receipts.bind` | `{ "destinationId", "packageDigest", "scope"? }` | Binding and its audit identifiers. | `observation_required`, `ambiguous_destination` |
 | `receipts.verify` | Same identity fields as bind. | Historical receipt with provenance and observation time, or an unverified result. | `ambiguous_destination` |
-| `receipts.observe` | `{ "request": ConnectorRequest }` | New independent observation and matching binding using a locally configured connector, plus `admission` when a dispatched lease completes. | `connector_not_configured`, `connector_read_failed`, `account_mismatch`, `object_mismatch` |
+| `receipts.observe` | `{ "request": ConnectorRequest }` | New independent observation and matching binding using a locally configured connector, plus `admission` when a dispatched lease completes., or `warnings: ["claim_not_dispatched"]` when the action's live reservation was never dispatched (the write bypassed dispatch and its budget; that reservation can no longer dispatch). A request whose attemptId differs from the dispatched attempt is refused with `attempt_mismatch` before any read. | `connector_not_configured`, `connector_read_failed`, `account_mismatch`, `object_mismatch` |
 | `receipts.recheck` | Same request shape as observe. | Appended current observation; the original receipt is unchanged. | As observe, plus `observation_required` without a prior receipt |
 
 Admission tools:

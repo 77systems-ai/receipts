@@ -62,9 +62,12 @@ test("no error code exists in source without a taxonomy entry, and no entry is o
   const found = codesInSource();
   const unmapped = [...found].filter(([code]) => !describeError(code));
   assert.deepEqual(unmapped, [], `Add taxonomy entries for: ${unmapped.map(([code, files]) => `${code} (${[...new Set(files)].join(", ")})`).join("; ")}`);
-  const sources = sourceFiles(join(root, "packages")).filter((file) => /[\\/]src[\\/]/.test(file)).map((file) => readFileSync(file, "utf8")).join("\n");
-  const orphaned = Object.keys(ERROR_TAXONOMY).filter((code) => !new RegExp(`["'\`]${code}["'\`]`).test(sources) && !new RegExp(`\\b${code}\\b`).test(sources));
+  // The taxonomy file itself cannot vouch for its own entries; every code must be emitted somewhere else as a literal.
+  const sources = sourceFiles(join(root, "packages")).filter((file) => /[\\/]src[\\/]/.test(file) && !file.endsWith("errors.ts")).map((file) => readFileSync(file, "utf8")).join("\n");
+  const emittedAsProse = new Set(["adapter_required"]); // Hook feedback text, not a quoted literal.
+  const orphaned = Object.keys(ERROR_TAXONOMY).filter((code) => !emittedAsProse.has(code) && !new RegExp(`["'\`]${code}["'\`]`).test(sources));
   assert.deepEqual(orphaned, [], "Taxonomy entries must correspond to codes that appear in source");
+  assert.ok(/adapter_required/.test(sources), "the prose allowlist must still exist in source");
   // Codes that are produced through indirection still reach users and must be documented.
   for (const code of ["internal_error", "startup_failed", "adapter_required", "invalid_proof", "assertion_failed", "duplicate_write_refused", "verification_pending"]) {
     assert.ok(describeError(code), `${code} must be documented`);

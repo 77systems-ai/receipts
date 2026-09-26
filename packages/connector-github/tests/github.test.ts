@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { connectorConformance } from '@77systems/receipts-conformance';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { assessCertification, connectorConformance, evaluationDigest, type EvaluationReceipt } from '@77systems/receipts-conformance';
 import { digestPayload } from '@77systems/receipts-sdk';
 import { createGitHubIssuesConnector, githubAccount, githubIssuePayload, GITHUB_ISSUE_SURFACE } from '../dist/index.js';
 
@@ -111,4 +113,16 @@ test('GitHub falls through an empty environment token to GH_TOKEN without overri
   // Explicit configuration remains authoritative, including an invalid empty token.
   await assert.rejects(() => createGitHubIssuesConnector({ owner: 'fixture', repo: 'test', token: '' }).read(request()), { code: 'missing_github_token' });
   assert.equal(calls, 2);
+});
+
+test('the committed public GitHub evaluation matches the current benchmark and connector version', () => {
+  // `npm test` never rewrites this artifact; `npm run evaluate:github` regenerates it deliberately.
+  const evaluation = JSON.parse(readFileSync(fileURLToPath(new URL('../../../docs/evaluations/github-0.3.0.json', import.meta.url)), 'utf8')) as EvaluationReceipt;
+  const version = (JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
+  assert.equal(evaluation.connector.version, version, 'run npm run evaluate:github after a connector version change');
+  assert.equal(evaluation.connector.name, 'GitHub issues connector');
+  assert.equal(evaluation.summary.conforms, true);
+  assert.deepEqual(assessCertification(evaluation).reasons, ['published_evaluation_declaration_required'], 'the committed evaluation must be conformant and only lack a publication declaration');
+  assert.match(evaluationDigest(evaluation), /^sha256:[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(evaluation), /\/home\/|\/Users\/|ghp_|Bearer /, 'the public artifact carries no paths or credentials');
 });

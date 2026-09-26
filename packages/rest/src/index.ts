@@ -120,6 +120,8 @@ export function createReceiptsApp({ store, connectors = [] }: RestOptions = {}) 
       return context.json(failure('invalid_input', error instanceof SyntaxError ? 'Invalid JSON.' : error.message), 400);
     }
     if (error instanceof ReceiptsError) return context.json(failure(error.code, error.message), 400);
+    // Only the error class reaches stderr: messages and stacks can carry provider text, paths, or credentials.
+    process.stderr.write(`${JSON.stringify({ error: { code: 'internal_error', name: error instanceof Error ? error.name : typeof error } })}\n`);
     return context.json(failure('internal_error', 'Receipts could not complete the operation.'), 500);
   });
   return app;

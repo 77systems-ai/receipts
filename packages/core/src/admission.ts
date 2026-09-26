@@ -48,21 +48,36 @@ function currentLease(entries: readonly AuditEntry[], action: ApprovedAction): A
 function isPossibleWrite(entry: AuditEntry): boolean {
   return entry.event === "attempt" || entry.writeMayHaveHappened === true || entry.destinationId !== undefined;
 }
+/** Entries of other actions on the same account that share this action's approval. */
+function competitors(entries: readonly AuditEntry[], action: ApprovedAction): readonly AuditEntry[] {
+  return entries.filter((entry) => entry.destinationAccount === action.destinationAccount && entry.approvalId === action.approvalId
+    && entry.actionId !== undefined && entry.actionId.toLowerCase() !== action.actionId.toLowerCase());
+}
 /**
  * An approval authorizes exactly one action on its account. It is spent by any other
- * action that may have written, or that holds a live (unexpired, unreleased) reservation:
- * two live reservations under one approval could both dispatch. A reservation that was
- * released or has expired unused never reached the destination, so it does not spend the
- * approval; refusals (duplicate, pre-claim policy denials) never spend it either.
+ * action that may have written, or whose current reservation is a claim that has not been
+ * durably released or expired: two live reservations under one approval could both
+ * dispatch. Liveness is never inferred from the local clock here; see expiredCompetitor.
+ * Refusal records (duplicate, pre-claim policy denials) never spend an approval.
  */
-function approvalConsumed(entries: readonly AuditEntry[], action: ApprovedAction, now: number): boolean {
-  const others = entries.filter((entry) => entry.destinationAccount === action.destinationAccount && entry.approvalId === action.approvalId
-    && entry.actionId !== undefined && entry.actionId.toLowerCase() !== action.actionId.toLowerCase());
+function approvalConsumed(entries: readonly AuditEntry[], action: ApprovedAction): boolean {
+  const others = competitors(entries, action);
   if (others.some(isPossibleWrite)) return true;
-  return [...new Set(others.map((entry) => entry.actionId!.toLowerCase()))].some((actionId) => {
+  return [...new Set(others.map((entry) => entry.actionId!.toLowerCase()))]
+    .some((actionId) => currentLease(entries, { ...action, actionId })?.event === "claim");
+}
+/**
+ * Another action's reservation under this approval that has passed its TTL without a
+ * durable claim_expired record. The claimant records that expiry first (fencing the stale
+ * owner through the audit) and re-enters, so two processes with skewed clocks can never
+ * both hold dispatchable reservations under one approval.
+ */
+function expiredCompetitor(entries: readonly AuditEntry[], action: ApprovedAction, now: number): AuditEntry | undefined {
+  for (const actionId of new Set(competitors(entries, action).map((entry) => entry.actionId!.toLowerCase()))) {
     const current = currentLease(entries, { ...action, actionId });
-    return current?.event === "claim" && Date.parse(current.registry!.expiresAt) > now;
-  });
+    if (current?.event === "claim" && Date.parse(current.registry!.expiresAt) <= now) return current;
+  }
+  return undefined;
 }
 function decision(entry: AuditEntry): AdmissionDecision {
   return { verdict: entry.admission!.verdict, auditEntryId: entry.id,
@@ -182,8 +197,15 @@ export class IdempotencyRegistry {
       let reason: "active_claim" | "completed" | "dispatched" | "approval_reused" | undefined;
       if (actionEntries.some((entry) => entry.event === "claim_completed" || entry.event === "binding")) reason = "completed";
       else if (actionEntries.some(isPossibleWrite)) reason = "dispatched";
-      else if (approvalConsumed(entries, action, now)) reason = "approval_reused";
-      else if (current?.event === "claim" && Date.parse(current.registry!.expiresAt) > now) reason = "active_claim";
+      else {
+        const competitor = expiredCompetitor(entries, action, now);
+        if (competitor) {
+          recordAdmission(this.#entry(identity(competitor as ApprovedAction), now, "claim_expired", { verdict: "EXPIRED" }, competitor.registry), this.store, entries.length);
+          throw new ReceiptsError("audit_conflict", "A competing reservation expired; refresh the registry snapshot before claiming.");
+        }
+        if (approvalConsumed(entries, action)) reason = "approval_reused";
+        else if (current?.event === "claim" && Date.parse(current.registry!.expiresAt) > now) reason = "active_claim";
+      }
       if (reason) {
         // Refusal is a separate decision record, never an amendment to the
         // original attempt when the caller changed payload or idempotency data.
@@ -226,9 +248,21 @@ export class IdempotencyRegistry {
     return current;
   }
 
+  /**
+   * A reservation may be dispatched or released only while it is unused: its lease is
+   * current and still a claim, its action has no possible or observed write (a write made
+   * without dispatch and then observed spends the reservation, it does not license another
+   * write), and its approval was not spent by another action.
+   */
   #unused(entries: readonly AuditEntry[], lease: ClaimLease, now: number): AuditEntry {
     const current = this.#held(entries, lease);
+    if (current.event === "claim_expired") throw new ReceiptsError("claim_expired", "The unused claim expired. Obtain a new fenced claim before dispatch.");
+    if (current.event === "claim_released") throw new ReceiptsError("stale_claim", "This lease was released. Obtain a new fenced claim before dispatch.");
     if (current.event !== "claim") throw new ReceiptsError("claim_dispatched", "Only an unused reservation can be dispatched or released. Reconcile any possible write.");
+    if (entries.some((entry) => sameAction(entry, lease) && isPossibleWrite(entry))) {
+      throw new ReceiptsError("duplicate_attempt", "This action already has a possible or observed write. Reconcile it; the reservation cannot be dispatched or released as unused.");
+    }
+    if (approvalConsumed(entries, lease)) throw new ReceiptsError("approval_reused", "This approval was spent by another action. The reservation cannot be dispatched.");
     if (Date.parse(current.registry!.expiresAt) <= now) {
       recordAdmission(this.#entry(identity(current as ApprovedAction), now, "claim_expired", { verdict: "EXPIRED" }, current.registry), this.store, entries.length);
       throw new ReceiptsError("claim_expired", "The unused claim expired. Obtain a new fenced claim before dispatch.");

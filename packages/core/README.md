@@ -89,9 +89,9 @@ New writes use a strict field allowlist. Payloads, credentials, provider respons
 Admission is separate from the four destination-verification verdicts. Admission verdicts (`CLAIMED`, `AUTHORIZED`, `DUPLICATE`, `policy_denied`, `RELEASED`, `COMPLETED`, `EXPIRED`) are recorded in `entry.admission` and never merge into classification. Every decision, lease change, and dispatch is appended to the same append-only hash chain.
 
 ```ts
-import { createIdempotencyRegistry } from "@77systems/receipts-core";
+import { createIdempotencyRegistry, type WritePolicy } from "@77systems/receipts-core";
 
-const policy = {
+const policy: WritePolicy = {
   rules: [{ id: "block-archived-account", effect: "block", destinationAccount: "social:archived" }],
   rateLimits: [{ id: "hourly-social-budget", surface: "social-publish", maxWrites: 10, windowMs: 3_600_000 }],
 };
@@ -113,7 +113,7 @@ if (result.verdict === "DUPLICATE") {
 }
 ```
 
-**Approval reuse.** An approval authorizes exactly one action on its account. It is spent by any other action on the same account that may have written (an audited `attempt`, `writeMayHaveHappened`, or an observed `destinationId`, including legacy v0.2 attempts) or that holds a live reservation (an unexpired, unreleased `claim`): two live reservations under one approval could both dispatch. A reservation that was released or that expired unused never reached the destination and frees the approval. Refusal records (`duplicate`, claim-time `policy_denied`) never spend it. A claim refused for this reason returns `DUPLICATE` with `reason: "approval_reused"`; a new intentional action needs a new approval.
+**Approval reuse.** An approval authorizes exactly one action on its account. It is spent by any other action on the same account that may have written (an audited `attempt`, `writeMayHaveHappened`, or an observed `destinationId`, including legacy v0.2 attempts) or that holds a live reservation (an unexpired, unreleased `claim`): two live reservations under one approval could both dispatch. A reservation that was durably released or expired never reached the destination and frees the approval. Liveness is never inferred from a local clock: a claimant that finds a competitor's reservation past its TTL first records that competitor's `claim_expired` and re-enters, so a stale owner with a slower clock is fenced by the audit and sees `claim_expired` on dispatch. Refusal records (`duplicate`, claim-time `policy_denied`) never spend it. A claim refused for this reason returns `DUPLICATE` with `reason: "approval_reused"`; `dispatch` throws `approval_reused` if the approval was spent meanwhile; the validator rejects any chain holding possible writes for two actions under one approval. A new intentional action needs a new approval.
 
 ### Registry construction
 
@@ -150,7 +150,7 @@ Lease checks apply to `dispatch`, `release`, and `complete`. `stale_claim`: the 
 
 ### release
 
-`release(lease)` gives up an unused live reservation, appends `claim_released` (`RELEASED`), and returns `{ verdict: "RELEASED", auditEntryId }`. It frees the approval and lets a new fenced owner claim the action. It throws the lease errors above; a dispatched reservation cannot be released (`claim_dispatched`) because its outcome must be reconciled.
+`release(lease)` gives up an unused live reservation, appends `claim_released` (`RELEASED`), and returns `{ verdict: "RELEASED", auditEntryId }`. It frees the approval and lets a new fenced owner claim the action. It throws the lease errors above: a dispatched reservation cannot be released (`claim_dispatched`) because its outcome must be reconciled; an action whose destination was already written or observed cannot dispatch or release as unused (`duplicate_attempt`), so a write made without dispatch spends the reservation instead of licensing another write; a durably expired lease reports `claim_expired` and a released one `stale_claim`.
 
 ### complete and completeVerified
 
@@ -171,3 +171,7 @@ The default policy permits registered surfaces. Explicit matching block rules al
 `exportAuditChain(store?)` returns `{envelopes, head}`. JSONL exports retain the original envelope hashes; memory and trusted custom stores produce the same canonical envelope format from their validated entries. `validateAuditChain(bundle)` checks every hash, link, entry, and head checkpoint offline and throws `audit_corrupt` on failure. Register the relevant surface definitions before validating, including the GitHub issues connector when the chain uses that surface.
 
 Export is opt-in and does not contact Receipts or a provider. It contains scoped audit metadata, such as account and action identifiers. Legacy v0.1 records retain their original freeform evidence to preserve old hashes; inspect a legacy-containing export before publishing it. A chain proves integrity relative to its retained head; signer identity and trust are separate concerns handled by the signed-receipt package.
+
+## Error taxonomy
+
+Every code core throws (`ReceiptsError.code`), every DUPLICATE decision reason, and every code the SDK, connectors, transports, proof, and conformance packages surface has one entry in `ERROR_TAXONOMY`, exported with `describeError(code)`, `ERROR_FAMILIES`, and `ERROR_DOCS_URL`. `describeError("audit_conflict")` returns `{ code, family, cause, fix, docs }` or `undefined` for an unknown code. The tables are frozen. [docs/ERRORS.md](../../docs/ERRORS.md) is generated from them by `npm run docs:errors`, and a core test fails when a code appears in any package source without an entry, when an entry corresponds to no emitted code, or when the page is stale. Descriptions are static text: they never contain input, identifiers, or payloads.

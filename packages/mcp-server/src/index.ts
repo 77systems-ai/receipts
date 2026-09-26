@@ -85,6 +85,8 @@ async function result(action: () => object | Promise<object>): Promise<CallToolR
   } catch (error) {
     // Every envelope names a documented code. The hint and link come from the taxonomy, never from input.
     const code = error instanceof ReceiptsError ? error.code : 'internal_error';
+    // Only the error class reaches stderr: messages and stacks can carry provider text, paths, or credentials.
+    if (code === 'internal_error') process.stderr.write(`${JSON.stringify({ error: { code, name: error instanceof Error ? error.name : typeof error } })}\n`);
     const entry = describeError(code);
     const value = {
       error: {
@@ -150,6 +152,13 @@ function digestApprovedPayload(payload: unknown): { packageDigest: string; encod
     if (error instanceof TypeError) throw new ReceiptsError('invalid_payload', 'Approved payloads must be plain JSON values.');
     throw error;
   }
+}
+
+/** Decisions are success envelopes. Attach the taxonomy's guidance for the refusal they carry so an agent knows what nothing-was-written means. */
+function guided<T extends { verdict: string; reason?: string }>(decision: T): T & { hint?: string; docs?: string } {
+  const code = decision.verdict === 'DUPLICATE' ? decision.reason : decision.verdict === 'policy_denied' ? 'policy_denied' : undefined;
+  const entry = code ? describeError(code) : undefined;
+  return entry ? { ...decision, hint: entry.fix, docs: entry.docs } : decision;
 }
 
 function validateReceiptUrl(receiptUrl: string | undefined): void {
@@ -220,7 +229,8 @@ function buildServer({ audit, connectors, policy, registry, privateKey }: Resolv
       const attempt = entries.find(entry => entry.event === 'attempt' && entry.attemptId === request.attemptId);
       if (!attempt?.registry) {
         // A live reservation that never dispatched means the write bypassed dispatch (and its budget).
-        // The binding still fails closed against any reclaim; surface the gap so the operator sees it.
+        // Core spends that reservation (dispatch and release now refuse with duplicate_attempt) and any
+        // reclaim is DUPLICATE; surface the gap so the operator sees it.
         const lease = entries.filter(entry => entry.registry && entry.event !== 'policy_denied' && entry.destinationAccount === request.destinationAccount
           && entry.actionId?.toLowerCase() === request.actionId.toLowerCase()).at(-1);
         return lease?.event === 'claim' ? { ...receipt, warnings: ['claim_not_dispatched'] } : receipt;
@@ -247,16 +257,16 @@ function buildServer({ audit, connectors, policy, registry, privateKey }: Resolv
   }, ({ action }) => result(() => ({ ...registry.evaluate(action, policy ?? {}), policyConfigured: policy !== undefined })));
   server.registerTool('receipts.claim', {
     title: 'Claim approved action',
-    description: 'Reserve the approved action BEFORE writing. CLAIMED returns a fenced lease. DUPLICATE means an execution already exists for this account and action, or the approval is spent: reconcile it with receipts.observe, never write again. policy_denied names the rule and reserves nothing. The returned claim (its token) is the caller\'s authority for receipts.dispatch and receipts.release: do not share, log, or audit it; only its hash is recorded.',
+    description: 'Reserve the approved action BEFORE writing. CLAIMED returns a fenced lease. DUPLICATE names its reason: completed or dispatched means this account and action already wrote or may have written, so reconcile it with receipts.observe using the ORIGINAL attemptId and never write again; active_claim means another live reservation holds it and nothing was written, so wait for it to dispatch, release, or expire (do not write, do not observe a nonexistent object, do not mint a new actionId); approval_reused means this approval already belongs to another action, so obtain a new approval or release that earlier reservation. policy_denied names the rule and reserves nothing. Each refusal carries hint and docs. The returned claim (its token) is the caller\'s authority for receipts.dispatch and receipts.release: do not share, log, or audit it; only its hash is recorded.',
     inputSchema: { action: approvedActionSchema },
     annotations: appendOnly,
-  }, ({ action }) => result(() => registry.claim(action, policy ?? {})));
+  }, ({ action }) => result(() => guided(registry.claim(action, policy ?? {}))));
   server.registerTool('receipts.dispatch', {
     title: 'Dispatch claimed write',
-    description: 'Durably record, immediately before the outward write, that the write may happen (delivery_unknown until observed) and consume the shared rate budget. After AUTHORIZED perform exactly one write with your own tool, then call receipts.observe with the real locator (or receipts.record, receipts.bind, and receipts.complete). On policy_denied call receipts.release and stop. Never dispatch the same claim twice; a crash after dispatch is uncertain forever until the destination is read back.',
+    description: 'Durably record, immediately before the outward write, that the write may happen (delivery_unknown until observed) and consume the shared rate budget. After AUTHORIZED perform exactly one write with your own tool, then call receipts.observe with the real locator and the same attemptId (or receipts.record, receipts.bind, and receipts.complete). On policy_denied call receipts.release and stop. Never dispatch the same claim twice. Refusals: duplicate_attempt means this action already has a possible or observed write, so reconcile it instead; approval_reused means another action spent the approval; claim_expired or stale_claim means claim again. A crash after dispatch is uncertain forever until the destination is read back.',
     inputSchema: { claim: claimLeaseSchema },
     annotations: appendOnly,
-  }, ({ claim }) => result(() => registry.dispatch(claim, policy ?? {})));
+  }, ({ claim }) => result(() => guided(registry.dispatch(claim, policy ?? {}))));
   server.registerTool('receipts.release', {
     title: 'Release unused claim',
     description: 'Release an unused reservation so its approval is free again. Only a claim that was never dispatched can be released; a dispatched claim is a possible write and must be reconciled instead.',

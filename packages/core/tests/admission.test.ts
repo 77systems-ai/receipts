@@ -233,6 +233,88 @@ for (const backend of ["memory", "jsonl"] as const) {
   });
 }
 
+test("a reservation whose action was written without dispatch and then observed cannot dispatch or release; the audit rejects such a chain", async () => {
+  const store = new MemoryAuditStore();
+  let now = start;
+  const registry = createIdempotencyRegistry({ store, ttlMs: 60_000, now: () => now });
+  const lease = won(registry.claim(action));
+  const connector = { surface: action.surface, read: () => ({ destinationAccount: action.destinationAccount, destinationId: "post-bypass", packageDigest: action.packageDigest, observedAt: new Date(now).toISOString() }) };
+  const receipt = await observeDestination(connector, action, store);
+  assert.equal(receipt.verdict, "complete");
+  assert.throws(() => registry.dispatch(lease), errorCode("duplicate_attempt"), "the live lease is spent by the observed write");
+  assert.throws(() => registry.release(lease), errorCode("duplicate_attempt"), "an observed write cannot be released as unused");
+  assert.equal(store.read().filter((entry) => entry.event === "attempt").length, 0);
+  assert.equal(registry.claim({ ...action, attemptId: "after-bypass" }).reason, "completed");
+  validateAuditChain(exportAuditChain(store));
+  // A hand-crafted chain that dispatches after the observation is rejected by the validator itself.
+  const claimEntry = store.read().find((entry) => entry.event === "claim")!;
+  const forgedAttempt: AuditEntry = { ...claimEntry, id: randomUUID(), event: "attempt", verdict: "delivery_unknown", writeMayHaveHappened: true, neverReached: false, admission: { verdict: "AUTHORIZED" } };
+  const forged: AuditStore = { read: () => [...store.read(), forgedAttempt], append() { throw new Error("read-only"); } };
+  assert.throws(() => exportAuditChain(forged), errorCode("invalid_entry"));
+});
+
+test("an expired competitor under the same approval is recorded expired before the approval frees, fencing a stale owner with a slow clock", (context) => {
+  const store = new MemoryAuditStore();
+  const behind = createIdempotencyRegistry({ store, ttlMs: 100, now: () => start });
+  const ahead = createIdempotencyRegistry({ store, ttlMs: 100, now: () => start + 101 });
+  const other: ApprovedAction = { ...action, actionId: randomUUID(), attemptId: "other-attempt" };
+  const stale = won(behind.claim(action));
+  const fresh = won(ahead.claim(other));
+  assert.deepEqual(store.read().map((entry) => entry.event), ["claim", "claim_expired", "claim"], "the claimant records the competitor's expiry durably before reserving");
+  assert.equal(store.read()[1]!.actionId, action.actionId);
+  // The stale owner's clock still says its lease is live; the audit says otherwise.
+  assert.throws(() => behind.dispatch(stale), errorCode("claim_expired"));
+  assert.throws(() => behind.release(stale), errorCode("claim_expired"));
+  assert.equal(ahead.dispatch(fresh).verdict, "AUTHORIZED");
+  assert.equal(store.read().filter((entry) => entry.event === "attempt").length, 1);
+  assert.equal(behind.claim({ ...action, attemptId: "retry" }).reason, "approval_reused");
+  validateAuditChain(exportAuditChain(store));
+  context.diagnostic("approval liveness is never inferred from a local clock");
+});
+
+test("a released lease is reported stale and the audit rejects two possible writes under one approval", () => {
+  const store = new MemoryAuditStore();
+  const registry = createIdempotencyRegistry({ store, now: () => start });
+  const lease = won(registry.claim(action));
+  registry.release(lease);
+  assert.throws(() => registry.dispatch(lease), errorCode("stale_claim"));
+  const other = won(registry.claim({ ...action, actionId: randomUUID(), attemptId: "other-attempt" }));
+  registry.dispatch(other);
+  const otherAttempt = store.read().find((entry) => entry.event === "attempt")!;
+  const forgedSecond: AuditEntry = { ...otherAttempt, id: randomUUID(), actionId: action.actionId, attemptId: "forged-second", registry: undefined, admission: undefined };
+  const forged: AuditStore = { read: () => [...store.read(), forgedSecond], append() { throw new Error("read-only"); } };
+  assert.throws(() => exportAuditChain(forged), errorCode("approval_reused"));
+});
+
+test("a registry-less policy denial that claims execution is rejected by the validator, not only by the append guard", () => {
+  const store = new MemoryAuditStore();
+  const registry = createIdempotencyRegistry({ store, now: () => start });
+  const denied = registry.claim(action, { defaultEffect: "block" });
+  assert.equal(denied.verdict, "policy_denied");
+  const genuine = store.read()[0]!;
+  for (const forgery of [
+    { ...genuine, writeMayHaveHappened: true, verdict: "delivery_unknown" as const },
+    { ...genuine, destinationId: "post-forged", publicObjectExists: true, verdict: "package_unverified" as const },
+  ]) {
+    const forged: AuditStore = { read: () => [forgery], append() { throw new Error("read-only"); } };
+    assert.throws(() => exportAuditChain(forged), errorCode("invalid_entry"));
+  }
+  assert.doesNotThrow(() => exportAuditChain(store));
+});
+
+test("a leased action is read back only under the attempt that dispatched it", async () => {
+  const store = new MemoryAuditStore();
+  const registry = createIdempotencyRegistry({ store, now: () => start });
+  registry.dispatch(won(registry.claim(action)));
+  const connector = { surface: action.surface, read: () => ({ destinationAccount: action.destinationAccount, destinationId: "post-1", packageDigest: action.packageDigest, observedAt: new Date(start).toISOString() }) };
+  await assert.rejects(observeDestination(connector, { ...action, attemptId: "foreign-attempt" }, store), errorCode("attempt_mismatch"));
+  assert.equal(store.read().filter((entry) => entry.event === "observation").length, 0, "no binding is created under a foreign attempt");
+  const receipt = await observeDestination(connector, action, store);
+  assert.equal(receipt.verdict, "complete");
+  assert.equal(registry.completeVerified(action, "post-1").verdict, "COMPLETED");
+  await assert.rejects(observeDestination(connector, { ...action, attemptId: "foreign-recheck", recheck: true }, store), errorCode("attempt_mismatch"));
+});
+
 test("evaluate is a pure pre-check: no audit mutation, no budget consumption, same snapshot rules", () => {
   const store = new MemoryAuditStore();
   let now = start;

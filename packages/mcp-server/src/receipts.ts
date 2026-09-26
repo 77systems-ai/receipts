@@ -26,19 +26,21 @@ function openInBrowser(url: string): void {
   child.unref();
 }
 
-export async function main(argv: readonly string[]): Promise<number> {
+export async function main(input: readonly string[]): Promise<number> {
+  // `--option=value` is split so a value never rides along with an option name into any message.
+  const argv = input.flatMap(arg => /^--[a-z-]+=/.test(arg) ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg]);
   const [command, ...rest] = argv;
   if (!command || command === '--help' || command === '-h') { process.stdout.write(HELP); return command ? 0 : 1; }
-  const flags = new Set(rest.filter(arg => arg.startsWith('--') && !['--audit-path', '--tail'].includes(arg)));
+  const flags = new Set(rest.filter(arg => arg.startsWith('--')));
   const option = (name: string): string | undefined => { const index = rest.indexOf(name); return index >= 0 ? rest[index + 1] : undefined; };
   if (command === 'doctor') {
-    for (const flag of flags) if (flag !== '--json') { process.stderr.write(`Unknown option ${flag}.\n${HELP}`); return 1; }
+    for (const flag of flags) if (flag !== '--json') { process.stderr.write(`Unknown option ${flag.split('=')[0]}.\n${HELP}`); return 1; }
     const report = await doctor();
     process.stdout.write(flags.has('--json') ? `${JSON.stringify(report, null, 2)}\n` : renderDoctor(report));
     return report.ok ? 0 : 1;
   }
   if (command === 'bug-report') {
-    for (const flag of flags) if (!['--json', '--url', '--open', '--no-doctor'].includes(flag)) { process.stderr.write(`Unknown option ${flag}.\n${HELP}`); return 1; }
+    for (const flag of flags) if (!['--json', '--url', '--open', '--no-doctor', '--audit-path', '--tail'].includes(flag)) { process.stderr.write(`Unknown option ${flag.split('=')[0]}.\n${HELP}`); return 1; }
     const tailValue = option('--tail');
     if (tailValue !== undefined && !/^\d{1,4}$/.test(tailValue)) { process.stderr.write('--tail needs a nonnegative integer.\n'); return 1; }
     const auditPath = option('--audit-path');
@@ -53,7 +55,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     return 0;
   }
-  process.stderr.write(`Unknown command ${command}.\n${HELP}`);
+  process.stderr.write(`Unknown command.\n${HELP}`); // The argument itself is never echoed.
   return 1;
 }
 

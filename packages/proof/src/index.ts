@@ -92,7 +92,8 @@ export function verifySignedReceipt(proof: unknown, options: {trustedPublicKey:s
 function escape(value: string): string { return value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
 /** Static, accessible HTML: no scripts, remote images, tracking, or verification requests. */
 export function renderReceiptBadge(proof: unknown, options: {trustedPublicKey:string|KeyObject;receiptUrl?:string}): string {
-  const result=verifySignedReceipt(proof,options);
+  const trustedPublicKey=key(options.trustedPublicKey); // A malformed trust anchor is its own refusal, not a bad receipt.
+  const result=verifySignedReceipt(proof,{trustedPublicKey});
   if(!result.valid||result.receipt.verdict!=='complete'||!result.receipt.independentlyVerified) throw new ReceiptsError('badge_requires_independent_completion', 'A valid independently verified complete receipt is required.');
   const short=result.receiptHash.slice('sha256:'.length, 'sha256:'.length+12);
   const attributes=`class="receipts-badge" data-receipts-format="${SIGNED_RECEIPT_FORMAT}" data-receipt-hash="${escape(result.receiptHash)}" data-signer-key="${escape(result.keyId)}" data-evidence-source="receipts-read"`;
