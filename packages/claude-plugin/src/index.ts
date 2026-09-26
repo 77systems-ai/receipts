@@ -23,7 +23,7 @@ function message(event: HookOutput['hookSpecificOutput']['hookEventName'], text:
 export function evaluateHook(input: HookInput, tools: Record<string, string> = {}, store?: AuditStore): HookOutput | undefined {
   const name = input.tool_name ?? '';
   // Every Receipts tool is verification machinery, not an outward write: admission, digest, and proof tools included.
-  if (!tools[name] && /(?:^|__)receipts[._](?:classify|record|bind|verify|observe|recheck|digest|policy|claim|dispatch|release|complete|sign|badge)$/.test(name)) return undefined;
+  if (!tools[name] && /(?:^|__)receipts[._](?:classify|record|bind|verify|observe|recheck|digest|policy|claim|prepare|dispatch|release|complete|sign|badge)$/.test(name)) return undefined;
   const event = input.hook_event_name === 'PostToolUseFailure' ? 'PostToolUseFailure' : 'PostToolUse';
   const response = object(input.tool_response);
   const structured = object(response?.structuredContent);

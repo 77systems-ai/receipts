@@ -99,3 +99,19 @@ test("thrown core errors describe themselves through the taxonomy", () => {
   }
   assert.equal(describeError("no_such_code"), undefined);
 });
+
+test("every ReceiptsError carries the taxonomy's hint and docs link", () => {
+  const error = new ReceiptsError("approval_reused", "This approval was spent by another action.");
+  assert.match(error.hint!, /^Request a separate approval per write: each approval ID authorizes exactly one action\./);
+  assert.equal(error.docs, `${ERROR_DOCS_URL}#approval_reused`);
+  assert.equal(new ReceiptsError("no_such_code", "x").hint, undefined);
+  assert.match(describeError("package_unverified")!.fix, /bytes written differ from the claimed bytes: claim from the staged file instead of re-authoring the content/);
+  for (const verdict of ["delivery_unknown", "package_unverified", "prewrite"]) assert.equal(describeError(verdict)?.family, "verdict");
+  assert.equal(describeError("complete"), undefined, "a complete verdict needs no corrective action");
+});
+
+test("every entry's fix opens with what to do, not a restatement of the failure", () => {
+  const openers = /^(Do not|Nothing|Request|Serialize|Add|Re-read|Inject|Read|Reconcile|Report|Register|Pass|Provide|Supply|Use|Hash|Generate|Build|Create|Configure|Set|Set up|Export|Obtain|Wait|Check|Stop|Reduce|Implement|Fix|Inspect|Sign|Call|Send|Make|Rerun|Run|Stage|Restart|Raise|Map|Publish|Start|Give|Only|Claim|Dispatch|Record|Observe|Verify|Retry|Return|Trust|Remove|Lower|Keep|Choose|Include|Correct|Mark|Mint|Treat|The bytes written|A |An |If )/;
+  const vague = Object.values(ERROR_TAXONOMY).filter((entry) => !openers.test(entry.fix)).map((entry) => `${entry.code}: ${entry.fix.slice(0, 60)}`);
+  assert.deepEqual(vague, []);
+});

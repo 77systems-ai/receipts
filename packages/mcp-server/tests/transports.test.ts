@@ -31,7 +31,7 @@ const approvedPayload = { title: 'Approved title', body: 'Exact approved body' }
 const approvedDigest = digestPayload(approvedPayload);
 const TOOL_NAMES = [
   'receipts.badge', 'receipts.bind', 'receipts.claim', 'receipts.classify', 'receipts.complete', 'receipts.digest', 'receipts.dispatch',
-  'receipts.observe', 'receipts.policy', 'receipts.recheck', 'receipts.record', 'receipts.release', 'receipts.sign', 'receipts.verify',
+  'receipts.observe', 'receipts.policy', 'receipts.prepare', 'receipts.recheck', 'receipts.record', 'receipts.release', 'receipts.sign', 'receipts.verify',
 ];
 type ToolResult = Awaited<ReturnType<Client['callTool']>>;
 
@@ -136,7 +136,7 @@ async function guardedCooperativeWrite(client: Client): Promise<string> {
   return claim.token;
 }
 
-test('stdio boots, lists exactly fourteen tools, and reconciles a guarded write without another write', { timeout: 20000 }, async () => {
+test('stdio boots, lists exactly fifteen tools, and reconciles a guarded write without another write', { timeout: 20000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'receipts-mcp-stdio-'));
   const client = new Client({ name: 'receipts-test', version: '1.0.0' });
   const transport = new StdioClientTransport({

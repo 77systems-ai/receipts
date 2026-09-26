@@ -1,3 +1,5 @@
+import { describeError } from "./errors.js";
+
 export type Verdict = "prewrite" | "delivery_unknown" | "package_unverified" | "complete";
 export type RetryLaw = "rearm_after_fix" | "never_auto_retry" | "never_second_post" | "none";
 
@@ -237,4 +239,8 @@ export class ReceiptsError extends Error {
     super(message);
     this.name = "ReceiptsError";
   }
+  /** What to do next, from the documented error taxonomy. Static text; never contains input. */
+  get hint(): string | undefined { return describeError(this.code)?.fix; }
+  /** Link to this code's entry in docs/ERRORS.md. */
+  get docs(): string | undefined { return describeError(this.code)?.docs; }
 }

@@ -77,6 +77,8 @@ Neither denial spends the approval, so a deliberate policy correction can author
 
 `DuplicateWriteError` has `code: 'duplicate_write_refused'`, `verdict: 'DUPLICATE'`, and `decision`, the persisted admission decision with its `auditEntryId` and `reason` (`active_claim`, `completed`, `dispatched`, or `approval_reused`); the property is optional in the type and always supplied by `execute`. `PolicyDeniedError` has `code: 'policy_denied'`, `verdict: 'policy_denied'`, `ruleId`, and `decision` with the `auditEntryId` of the denial from whichever step refused. Both are thrown before the callback runs; no destination write was made. Unknown surfaces and audit failures still fail closed.
 
+Every refusal says what to do next. `DuplicateWriteError`, `PolicyDeniedError`, and `VerificationPendingError` carry a `hint` from the [error taxonomy](../../docs/ERRORS.md); the duplicate's message names its reason and appends that hint. For a reused approval it reads "Request a separate approval per write: each approval ID authorizes exactly one action." Core `ReceiptsError` values expose the same guidance as `error.hint` and `error.docs`.
+
 ```ts
 import { createReceipts, DuplicateWriteError, PolicyDeniedError } from "@77systems/receipts-sdk";
 

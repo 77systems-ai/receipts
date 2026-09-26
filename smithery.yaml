@@ -19,7 +19,7 @@ startCommand:
         description: Local path to a 0600 PEM PKCS8 Ed25519 private key enabling receipts.sign and receipts.badge. Its contents never leave the machine.
       fileRoots:
         type: string
-        description: Absolute directories the file-write connector may read back, separated by the platform path delimiter. Enables file read-back.
+        description: Absolute directories the file-write connector may read back and receipts.prepare may claim staged files from, separated by the platform path delimiter.
       fileAccount:
         type: string
         description: Destination account label for file-write receipts. Defaults to local:file.

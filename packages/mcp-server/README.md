@@ -1,6 +1,6 @@
 # Receipts MCP
 
-**Verification for every AI agent.** Fourteen tools expose the Receipts core over stdio or Streamable HTTP: evidence, write admission, and signed proofs. Node.js 20+; MIT.
+**Verification for every AI agent.** Fifteen tools expose the Receipts core over stdio or Streamable HTTP: evidence, write admission, and signed proofs. Node.js 20+; MIT.
 
 ## Run
 
@@ -98,6 +98,7 @@ Admission tools:
 | `receipts.digest` | `{ "payload": any JSON value }` | `{ "packageDigest": "sha256:…", "encoding": "receipts-json-v1" }` | `invalid_payload` |
 | `receipts.policy` | `{ "action": ApprovedAction }` | `{ "verdict": "allowed" \| "policy_denied", "ruleId"?, "policyConfigured" }` | `not_a_destination_write`, `invalid_entry` |
 | `receipts.claim` | `{ "action": ApprovedAction }` | `CLAIMED` with `claim` (the lease, including its token), `DUPLICATE` with `reason`, or `policy_denied` with `ruleId`; each with `auditEntryId`. | `not_a_destination_write`, `invalid_entry`, `audit_busy` |
+| `receipts.prepare` | `{ "action": ApprovedAction without packageDigest, "payload"?: unknown, "file"?: { "source", "destination" } }` | `packageDigest`, `encoding`, `policy`, the claim decision (`CLAIMED` with `claim`, `DUPLICATE` with `reason`, or `policy_denied` with `ruleId`), `hint`/`docs` on refusals, `next` after `CLAIMED`, and `destination` for staged files. | `invalid_prepare`, `invalid_payload`, `invalid_file_payload`, `file_staging_not_configured`, `staged_file_not_text`, `object_mismatch` (outside roots), `file_too_large` |
 | `receipts.dispatch` | `{ "claim": ClaimLease }` | `AUTHORIZED` or `policy_denied` with `ruleId`. | `stale_claim`, `claim_dispatched`, `claim_expired` |
 | `receipts.release` | `{ "claim": ClaimLease }` | `RELEASED`. | `stale_claim`, `claim_dispatched`, `claim_expired` |
 | `receipts.complete` | `{ "action": ApprovedAction, "destinationId" }` | `COMPLETED`. | `stale_claim`, `claim_not_dispatched`, `observation_required`, `object_mismatch` |
@@ -128,13 +129,13 @@ This deliberately fictional digest is for demonstration. The result is `delivery
 
 ## Guarded write sequence
 
-1. `receipts.digest` with the exact approved payload, once. Every later call takes the digest, never the content.
-2. `receipts.policy` (optional) for early feedback. `allowed` is not a reservation.
-3. `receipts.claim` with the approved action. `DUPLICATE` means an execution already exists for this account and action, or the approval is spent: reconcile with `receipts.observe`; never write again. `policy_denied` reserves nothing; stop and report the rule.
-4. `receipts.dispatch` with the returned claim, immediately before the write. `AUTHORIZED` durably records that the write may happen and consumes the shared budget. `policy_denied` means the budget moved between claim and dispatch: call `receipts.release` and stop.
-5. Perform exactly one outward write with your own tool. Never dispatch the same claim twice. A crash after dispatch is uncertain until the destination is read back; the lease never expires into another write.
-6. `receipts.observe` with the real locator or object ID. A matching independent read binds the object and completes the lease, returning `admission.verdict: "COMPLETED"`. Without a connector, `receipts.record` the observation, `receipts.bind`, then `receipts.complete`.
-7. `receipts.sign` or `receipts.badge` when a shareable proof is required and a key is configured.
+1. `receipts.prepare` with the approved action and exactly one of `payload` (the exact approved JSON) or `file` (`{ source, destination }`, file-write only). It digests, evaluates policy, and claims in one call. With `file`, the server reads the staged file and claims its exact bytes for `destination`, so content cannot be re-authored between approval and write. `DUPLICATE` carries its reason and a hint (reconcile, wait, or obtain a new approval); `policy_denied` reserves nothing. `receipts.digest`, `receipts.policy`, and `receipts.claim` remain available as separate steps.
+2. `receipts.dispatch` with the returned claim, immediately before the write. `AUTHORIZED` durably records that the write may happen and consumes the shared budget. `policy_denied` means the budget moved between claim and dispatch: call `receipts.release` and stop.
+3. Perform exactly one outward write with your own tool; after a staged `prepare`, copy the staged file to `destination` byte-for-byte. Never dispatch the same claim twice. A crash after dispatch is uncertain until the destination is read back; the lease never expires into another write.
+4. `receipts.observe` with the real locator or object ID and the same attemptId. A matching independent read binds the object and completes the lease, returning `admission.verdict: "COMPLETED"`. Without a connector, `receipts.record` the observation, `receipts.bind`, then `receipts.complete`.
+5. `receipts.sign` or `receipts.badge` when a shareable proof is required and a key is configured.
+
+That is five steps for a guarded, verified, signed write, four of them Receipts calls. Observe and sign stay separate because they must happen after the write. A non-complete observe or recheck result carries `hint` and `docs`: `package_unverified` means the bytes written differ from the claimed bytes, so claim from the staged file next time instead of re-authoring the content.
 
 `classify` evaluates supplied evidence without I/O. `record` always labels caller observations host-supplied with independentlyVerified false, including forged provider/trust flags. `bind` requires an audited exact object/package observation and inherits its provenance. `verify` inspects history without refreshing it.
 
@@ -142,7 +143,26 @@ This deliberately fictional digest is for demonstration. The result is `delivery
 
 `receipts.complete` needs no token: the audited dispatch and binding are its authority, so recovery works after a restart. `receipts.badge` renders only independently verified complete receipts; cooperative receipts can be signed, and the proof shows `host-supplied`.
 
-A programmatic server can pass `{ store, connectors, policy, claimTtlMs, signingKey }`. A remote caller cannot install connectors, supply a read result, or change the policy. A changed-content read is independently observed but remains package_unverified. `bind`/`verify`/`sign`/`badge` accept an optional scope with account/action/surface/attempt to disambiguate historical records.
+A programmatic server can pass `{ store, connectors, policy, claimTtlMs, signingKey, fileRoots }`; `fileRoots` (from `RECEIPTS_FILE_ROOTS` in the CLI) enables staged-file claims and must cover both the staging and destination directories. A remote caller cannot install connectors, supply a read result, or change the policy. A changed-content read is independently observed but remains package_unverified. `bind`/`verify`/`sign`/`badge` accept an optional scope with account/action/surface/attempt to disambiguate historical records.
+
+## Client library
+
+`@77systems/receipts-mcp/client` is a Node client for this server that cannot hang. It launches the server (this package's CLI by default, or any `command`/`args`) or reaches a Streamable HTTP `url`. It completes the handshake and races every call against a deadline, 60 seconds by default and configurable with `timeoutMs`. When the deadline passes, the client stops the server process and throws `client_timeout`, naming the tool and stating that the call returned no receipt. A server that exits mid-call produces `client_disconnected`. Responses split across any number of pipe reads are reassembled by the official MCP transport before parsing.
+
+```ts
+import { connectReceipts } from '@77systems/receipts-mcp/client';
+
+const receipts = await connectReceipts({ env: { RECEIPTS_FILE_ROOTS: '/srv/receipts', RECEIPTS_AUDIT_PATH: '/srv/receipts/audit.jsonl' } });
+try {
+  const prepared = await receipts.prepare({ action, file: { source: '/srv/receipts/staging/memo.md', destination: '/srv/receipts/out/memo.md' } });
+  if (prepared.verdict !== 'CLAIMED') throw new Error(String(prepared.hint));
+  await receipts.dispatch(prepared.claim as Record<string, unknown>);
+  await copyFile('/srv/receipts/staging/memo.md', '/srv/receipts/out/memo.md');
+  const receipt = await receipts.observe({ ...action, packageDigest: prepared.packageDigest, locator: { path: '/srv/receipts/out/memo.md' } });
+} finally { await receipts.close(); }
+```
+
+Tool refusals throw `ReceiptsToolError` with `tool`, `code`, `message`, `hint`, and `docs`. After a timeout or disconnect, do not repeat an outward write: reconnect and read the audit (`verify`, `observe`, or a claim that reports `DUPLICATE` with reason `dispatched`) to learn what was recorded.
 
 ## Security notes
 

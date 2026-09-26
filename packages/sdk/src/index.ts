@@ -10,6 +10,7 @@ import {
   record,
   verify,
   ReceiptsError,
+  describeError,
   type AuditStore,
   type Classification,
   type DestinationConnector,
@@ -90,9 +91,13 @@ export interface ReceiptsOptions {
 export class DuplicateWriteError extends Error {
   readonly code = "duplicate_write_refused";
   readonly verdict = "DUPLICATE";
+  /** What to do next for the audited reason (for example approval_reused), from the error taxonomy. */
+  readonly hint: string;
   constructor(readonly decision?: AdmissionDecision) {
-    super("This attempt or approved action already has an execution claim. Reconcile the existing destination; do not execute again. A separately approved action needs a new actionId and approvalId.");
+    const hint = describeError(decision?.reason ?? "duplicate_write_refused")?.fix ?? "";
+    super(`This attempt or approved action already has an execution claim${decision?.reason ? ` (${decision.reason})` : ""}. ${hint}`.trim());
     this.name = "DuplicateWriteError";
+    this.hint = hint;
   }
 }
 
@@ -100,8 +105,9 @@ export class PolicyDeniedError extends Error {
   readonly code = "policy_denied";
   readonly verdict = "policy_denied";
   readonly ruleId: string;
+  readonly hint = describeError("policy_denied")!.fix;
   constructor(readonly decision: AdmissionDecision) {
-    super("The write was denied by the configured policy. No destination write was made.");
+    super(`The write was denied by policy rule ${decision.ruleId}. No destination write was made.`);
     this.name = "PolicyDeniedError";
     this.ruleId = decision.ruleId!;
   }
@@ -109,6 +115,7 @@ export class PolicyDeniedError extends Error {
 
 export class VerificationPendingError extends Error {
   readonly code = "verification_pending";
+  readonly hint = describeError("verification_pending")!.fix;
   constructor(message = "Cannot claim complete without a durable destination receipt bound to this approved package.") {
     super(message);
     this.name = "VerificationPendingError";

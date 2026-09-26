@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, statSync } from 'node:fs';
+import { delimiter } from 'node:path';
 import { createPrivateKey, type KeyObject } from 'node:crypto';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { JsonlAuditStore, ReceiptsError, validatePolicy, type WritePolicy } from '@77systems/receipts-core';
@@ -84,8 +85,10 @@ async function main(): Promise<void> {
   signingKeyPath ??= configured('RECEIPTS_SIGNING_KEY_PATH');
   const claimTtlMs = claimTtl !== undefined ? parseClaimTtl(claimTtl, '--claim-ttl')
     : configured('RECEIPTS_CLAIM_TTL_MS') !== undefined ? parseClaimTtl(configured('RECEIPTS_CLAIM_TTL_MS')!, 'RECEIPTS_CLAIM_TTL_MS') : undefined;
+  const fileRoots = configured('RECEIPTS_FILE_ROOTS')?.split(delimiter).map(root => root.trim()).filter(Boolean);
   const options: ServerOptions = {
     connectors: configuredConnectors(),
+    ...(fileRoots?.length ? { fileRoots } : {}),
     ...(auditPath ? {store:new JsonlAuditStore(auditPath)} : {}),
     ...(policyPath ? { policy: loadPolicy(policyPath) } : {}),
     ...(claimTtlMs !== undefined ? { claimTtlMs } : {}),

@@ -57,7 +57,7 @@
         },
         {
           "name": "RECEIPTS_FILE_ROOTS",
-          "description": "Absolute directories the file-write connector may read back, separated by the platform path delimiter. Required to enable file read-back.",
+          "description": "Absolute directories the file-write connector may read back and receipts.prepare may claim staged files from, separated by the platform path delimiter. Required for either.",
           "isRequired": false,
           "isSecret": false
         },

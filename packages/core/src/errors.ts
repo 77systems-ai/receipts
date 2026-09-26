@@ -6,7 +6,7 @@
  * source without an entry here. Entries describe causes and fixes; they never echo
  * payloads, identifiers, credentials, or provider messages.
  */
-export type ErrorFamily = "input" | "audit" | "admission" | "connector" | "sdk" | "github" | "file" | "gmail" | "mcp" | "rest" | "proof" | "conformance" | "plugin";
+export type ErrorFamily = "verdict" | "input" | "audit" | "admission" | "connector" | "sdk" | "github" | "file" | "gmail" | "mcp" | "client" | "rest" | "proof" | "conformance" | "plugin";
 
 export interface ErrorTaxonomyEntry {
   readonly code: string;
@@ -22,6 +22,7 @@ export interface ErrorTaxonomyEntry {
 export const ERROR_DOCS_URL = "https://github.com/77systems-ai/receipts/blob/main/docs/ERRORS.md";
 
 export const ERROR_FAMILIES: Readonly<Record<ErrorFamily, string>> = Object.freeze({
+  verdict: "Destination verdicts that are not complete (answers, not errors)",
   input: "Input validation (core classify, record, bind, verify)",
   audit: "Audit store integrity and concurrency",
   admission: "Claims, dispatch, policy, and completion (idempotency registry)",
@@ -31,6 +32,7 @@ export const ERROR_FAMILIES: Readonly<Record<ErrorFamily, string>> = Object.free
   file: "File connector",
   gmail: "Gmail connector",
   mcp: "MCP server tools and startup",
+  client: "Receipts MCP client library",
   rest: "REST transport",
   proof: "Signed proofs and badges",
   conformance: "Conformance evaluations and certification eligibility",
@@ -38,6 +40,16 @@ export const ERROR_FAMILIES: Readonly<Record<ErrorFamily, string>> = Object.free
 });
 
 const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = {
+  // ---- verdicts ------------------------------------------------------------
+  delivery_unknown: ["verdict",
+    "A write may have reached the destination, but no read-back has bound it to the approved package: the executor threw, the response was lost, or the read-back could not find or read the object.",
+    "Do not write again. Read the destination back with the original attemptId and a real locator (receipts.observe or the SDK's reconcile); if the object is not there yet, read again later. The action stays uncertain until an observation settles it."],
+  package_unverified: ["verdict",
+    "The destination object exists, but the bytes written differ from the claimed bytes (observedPackageDigest shows what was found), or an object exists with no binding to the approved package.",
+    "The bytes written differ from the claimed bytes: claim from the staged file instead of re-authoring the content (receipts.prepare with file, then copy that file unchanged). Do not write this action again; inspect the object, and correct it only as a new action with its own approval."],
+  prewrite: ["verdict",
+    "No destination evidence exists yet, or the destination was affirmatively never reached.",
+    "Nothing is known to have been written. Proceed only through claim and dispatch; rearm a failed attempt only after fixing the cause, with a new digest and a new attempt."],
   // ---- input ---------------------------------------------------------------
   invalid_write: ["input",
     "An outward write or SDK execute option is missing, or an identity field (attemptId, destinationAccount, approvalId, idempotencyKey, statusFlag) is empty, unbounded, has surrounding whitespace or control characters, or a flag is not a boolean.",
@@ -146,7 +158,7 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
     "Report the existing receipt. A separately approved action needs a new actionId and approvalId."],
   approval_reused: ["admission",
     "The approvalId was already spent on a different action for this account, by a possible write or a reservation that is not durably released or expired. Returned as a DUPLICATE reason at claim, thrown at dispatch, and rejected by the audit validator when a chain holds possible writes for two actions under one approval.",
-    "Nothing was written for this action. Obtain a new approval for it, or if the earlier action was abandoned, release its reservation (or let it expire and be recorded) and claim again."],
+    "Request a separate approval per write: each approval ID authorizes exactly one action. Nothing was written for this action. If the earlier action was abandoned, release its reservation (or let it expire) before reusing the approval."],
   // ---- connector -----------------------------------------------------------
   invalid_connector: ["connector",
     "observeDestination received something without a read function or whose surface differs from the request.",
@@ -163,6 +175,9 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
   attempt_mismatch: ["connector",
     "observeDestination or receipts.observe/recheck was asked to read an action back under an attemptId different from the attempt that dispatched or completed it. Binding under a foreign attempt would strand the dispatched lease.",
     "Read the destination back with the original attemptId of the dispatched attempt. A new attempt for the same action is not a new write."],
+  staged_file_not_text: ["file",
+    "The staged file passed to receipts.prepare or stageFilePayload is not valid UTF-8 text.",
+    "Stage the approved content as UTF-8 text. Binary files are outside the file-write payload contract."],
   invalid_observation: ["connector",
     "The connector returned an observation without a valid ISO timestamp.",
     "Return observedAt as an ISO-8601 string from the connector's own read."],
@@ -197,7 +212,7 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
     "Read again. If it persists, verify the repository and issue exist and the API version header is supported."],
   not_a_github_issue: ["github",
     "The requested number is a pull request.",
-    "Pull requests are outside the GitHub issues surface. Use the issue number of an actual issue."],
+    "Use the issue number of an actual issue; pull requests are outside the GitHub issues surface."],
   // ---- file ------------------------------------------------------------------
   invalid_file_payload: ["file",
     "filePayload received an empty path, or content that is neither a string nor null.",
@@ -225,6 +240,12 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
   connector_not_configured: ["mcp",
     "receipts.observe or receipts.recheck was called for a surface that has no locally configured connector.",
     "Configure the connector at startup (for GitHub set RECEIPTS_GITHUB_REPO and a local token, for Gmail set RECEIPTS_GMAIL_ACCOUNT and RECEIPTS_GMAIL_TOKEN, for files set RECEIPTS_FILE_ACCOUNT and optionally RECEIPTS_FILE_ROOTS, or pass connectors programmatically). Request data cannot install a connector."],
+  invalid_prepare: ["mcp",
+    "receipts.prepare received both payload and file, or neither.",
+    "Pass exactly one: payload for any surface, or file ({ source, destination }) for the file-write surface."],
+  file_staging_not_configured: ["mcp",
+    "receipts.prepare was asked to claim from a staged file, but the server started without RECEIPTS_FILE_ROOTS.",
+    "Restart the server with RECEIPTS_FILE_ROOTS covering the staging and destination directories, or pass the approved payload instead."],
   receipt_not_found: ["mcp",
     "receipts.sign or receipts.badge found no historical complete receipt for the object, digest, and scope.",
     "Verify the identity with receipts.verify. Observe and bind the object first; a receipt cannot be signed before it exists."],
@@ -246,6 +267,16 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
   internal_error: ["mcp",
     "An unexpected non-Receipts error occurred while handling a tool call or request. Its message is deliberately withheld from the response; the server writes only the error class name to its stderr.",
     "Check the server's stderr locally for the error class, reproduce, then report it with `receipts bug-report`. Do not assume the operation succeeded."],
+  // ---- client --------------------------------------------------------------
+  client_timeout: ["client",
+    "A Receipts MCP call or the connection handshake did not answer within the client timeout (60 seconds by default). The client stopped the server process; the call returned no receipt.",
+    "Do not repeat an outward write. Reconnect and read the audit to learn what was recorded: receipts.verify or receipts.observe for the object, or claim again (DUPLICATE with reason dispatched means the dispatch was recorded). Raise timeoutMs only if the server is known to be slow."],
+  client_disconnected: ["client",
+    "The Receipts server process exited or closed its connection while a call was in flight. The call returned no receipt.",
+    "Check the server's stderr (startup_failed names configuration problems), reconnect, and read the audit before acting. Do not repeat an outward write."],
+  client_closed: ["client",
+    "A call was made on a Receipts client after it was closed, including after a timeout stopped its server.",
+    "Create a new client with connectReceipts and read the audit before continuing."],
   // ---- rest ----------------------------------------------------------------
   forbidden_origin: ["rest",
     "The request's Host is not loopback or its Origin is not the same loopback origin.",
@@ -321,9 +352,9 @@ export function renderErrorTaxonomyMarkdown(): string {
   const lines: string[] = [
     "# Receipts error taxonomy",
     "",
-    "Generated from `packages/core/src/errors.ts` by `npm run docs:errors`; do not edit by hand. Every code Receipts returns, throws, audits, or prints maps to one entry here, and a core test refuses source code that introduces a code without one. Programmatic access: `describeError(code)` from `@77systems/receipts-core`.",
+    "Generated from `packages/core/src/errors.ts` by `npm run docs:errors`; do not edit by hand. Every code Receipts returns, throws, audits, or prints maps to one entry here, and a core test refuses source code that introduces a code without one. Programmatic access: `describeError(code)` from `@77systems/receipts-core`, or `error.hint` and `error.docs` on any `ReceiptsError`.",
     "",
-    "Two rules hold for every entry: no fix ever repeats an uncertain outward write, and no message ever contains payload content, credentials, or raw provider errors. SDK argument and payload validation raise `TypeError` values that carry a `code` property from this table (`invalid_write`, `invalid_payload`).",
+    "Every entry says what to do next. Two rules hold throughout: no fix ever repeats an uncertain outward write, and no message ever contains payload content, credentials, or raw provider errors. The first section covers the non-complete destination verdicts, which are answers rather than errors; MCP observe and recheck results carry their guidance as `hint`. SDK argument and payload validation raise `TypeError` values that carry a `code` property from this table (`invalid_write`, `invalid_payload`).",
     "",
   ];
   for (const [family, title] of Object.entries(ERROR_FAMILIES) as [ErrorFamily, string][]) {
@@ -331,7 +362,7 @@ export function renderErrorTaxonomyMarkdown(): string {
     if (!entries.length) continue;
     lines.push(`## ${title}`, "");
     for (const entry of entries) {
-      lines.push(`### ${entry.code}`, "", `**Probable cause.** ${entry.cause}`, "", `**Suggested fix.** ${entry.fix}`, "");
+      lines.push(`### ${entry.code}`, "", `**Probable cause.** ${entry.cause}`, "", `**What to do.** ${entry.fix}`, "");
     }
   }
   return `${lines.join("\n").trimEnd()}\n`;

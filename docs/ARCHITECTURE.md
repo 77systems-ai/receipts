@@ -75,7 +75,7 @@ A dispatch records uncertainty atomically with policy admission. Rate limits cou
 
 Chain validation accepts a registry-less `policy_denied` only as an inert decision: verdict `prewrite`, `ruleId` present, no `writeMayHaveHappened`, and no `destinationId`. Every other admission event requires valid fenced lease metadata that matches the action's current lease. Public `record` and direct built-in-store `append` reject every admission event with `protected_admission`, including this one.
 
-The MCP server exposes admission (claim, dispatch, release, complete, policy), digest, and signed-proof (sign, badge) tools alongside the verification tools. Their policy, claim TTL, and signing key are supplied by the local operator at startup; no tool call can change the policy, install code, or provide a key. Details are in [packages/mcp-server/README.md](../packages/mcp-server/README.md).
+The MCP server exposes admission (claim, dispatch, release, complete, policy), digest, and signed-proof (sign, badge) tools alongside the verification tools. Their policy, claim TTL, and signing key are supplied by the local operator at startup; no tool call can change the policy, install code, or provide a key. Details are in [packages/mcp-server/README.md](../packages/mcp-server/README.md). `receipts.prepare` bundles digest, policy, and claim into one call and can claim the exact bytes of a staged file for the file-write surface; the claim-time policy check and reservation semantics are unchanged.
 
 ## Signatures, evaluations and observability
 

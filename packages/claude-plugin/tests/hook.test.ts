@@ -18,6 +18,7 @@ test('ignores every Receipts admission, digest, and proof tool as verification m
   }
   assert.equal(evaluateHook({ tool_name: 'mcp__receipts__receipts_claim', tool_use_id: 'c1', tool_response: { structuredContent: { verdict: 'CLAIMED', claim: { token: 'never-inspected' } } } }), undefined);
   assert.equal(evaluateHook({ tool_name: 'mcp__receipts__receipts_dispatch', tool_use_id: 'd1', tool_response: { structuredContent: { verdict: 'AUTHORIZED' } } }), undefined);
+  assert.equal(evaluateHook({ tool_name: 'mcp__receipts__receipts_prepare', tool_use_id: 'p1', tool_response: { structuredContent: { verdict: 'CLAIMED', claim: { token: 'never-inspected' } } } }), undefined);
 });
 test('an unmapped write cannot guess its destination surface', () => {
   const output = evaluateHook({ tool_name: 'mcp__social__publish' });

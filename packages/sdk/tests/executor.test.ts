@@ -427,3 +427,16 @@ test('a budget consumed between claim and dispatch is denied at dispatch; a fail
  assert.deepEqual(events,['claim','policy_denied'],'dispatch remains the enforcement boundary after a passing claim-time check');
  assert.equal(base.read().filter(entry=>entry.event==='attempt').length,1);
 });
+
+test('SDK refusals say what to do next: a reused approval asks for a separate approval per write', async () => {
+  const {MemoryAuditStore}=await import('@77systems/receipts-core');
+  const {PolicyDeniedError}=await import('../src/index.js');
+  const store=new MemoryAuditStore();const name=surface();
+  const first={...identity(),surface:name,attemptId:'first-approval-use',payload:{text:'one'},execute(){}};
+  await createReceipts({store}).execute(first);
+  await assert.rejects(createReceipts({store}).execute({...first,actionId:randomUUID(),attemptId:'second-approval-use',payload:{text:'two'}}),(error:unknown)=>
+    error instanceof DuplicateWriteError&&error.decision?.reason==='approval_reused'&&/^Request a separate approval per write/.test(error.hint)&&/approval_reused/.test(error.message));
+  await assert.rejects(createReceipts({store,policy:{defaultEffect:'block'}}).execute({...first,...identity(),attemptId:'blocked'}),(error:unknown)=>
+    error instanceof PolicyDeniedError&&/Inspect ruleId/.test(error.hint)&&/default-policy/.test(error.message));
+  assert.match(new VerificationPendingError().hint,/Reconcile/);
+});

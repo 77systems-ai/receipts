@@ -8,7 +8,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { assessCertification, connectorConformance, evaluationDigest, type EvaluationReceipt } from '@77systems/receipts-conformance';
 import { digestPayload } from '@77systems/receipts-sdk';
-import { createFileConnector, filePayload, normalizeFileContent, FILE_WRITE_SURFACE, type TrustedConnector } from '../dist/index.js';
+import { copyFileSync } from 'node:fs';
+import { createFileConnector, filePayload, normalizeFileContent, stageFilePayload, FILE_WRITE_SURFACE, type TrustedConnector } from '../dist/index.js';
 
 const VERSION = (JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
 
@@ -178,4 +179,39 @@ test('the committed public File evaluation matches the current benchmark and con
   assert.deepEqual(assessCertification(evaluation).reasons, ['published_evaluation_declaration_required'], 'the committed evaluation must be conformant and only lack a publication declaration');
   assert.match(evaluationDigest(evaluation), /^sha256:[a-f0-9]{64}$/);
   assert.doesNotMatch(JSON.stringify(evaluation), /\/home\/|\/Users\/|\/tmp\/|ya29\.|Bearer /, 'the public artifact carries no paths or credentials');
+});
+
+test('a payload staged from a file verifies once that exact file is copied to its destination', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'receipts-file-stage-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const staged = join(dir, 'staging', 'runbook.md');
+  mkdirSync(join(dir, 'staging'));
+  writeFileSync(staged, '# Runbook\r\n\r\nPublish.\r\n');
+  const destination = join(dir, 'published', 'nested', 'runbook.md'); // Its directories do not exist yet.
+  const payload = stageFilePayload(staged, destination, { roots: [dir] });
+  assert.deepEqual(payload, filePayload(destination, '# Runbook\n\nPublish.'));
+  mkdirSync(join(dir, 'published', 'nested'), { recursive: true });
+  copyFileSync(staged, destination);
+  const observed = await read(createFileConnector({ roots: [dir] }), destination, payload.content);
+  assert.equal(observed.packageDigest, digestPayload(payload), 'the claimed bytes are the written bytes');
+});
+
+test('staging refuses paths outside the roots, the same path twice, and non-text sources', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'receipts-file-stage-'));
+  const outside = mkdtempSync(join(tmpdir(), 'receipts-file-stage-outside-'));
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); });
+  const staged = join(dir, 'staged.md');
+  writeFileSync(staged, 'approved');
+  const foreign = join(outside, 'staged.md');
+  writeFileSync(foreign, 'approved');
+  const binary = join(dir, 'binary');
+  writeFileSync(binary, Buffer.from([0xff, 0xfe]));
+  const roots = { roots: [dir] };
+  assert.throws(() => stageFilePayload(foreign, join(dir, 'out.md'), roots), { code: 'object_mismatch' });
+  assert.throws(() => stageFilePayload(staged, join(outside, 'out.md'), roots), { code: 'object_mismatch' });
+  assert.throws(() => stageFilePayload(staged, staged, roots), { code: 'invalid_file_payload' });
+  assert.throws(() => stageFilePayload(binary, join(dir, 'out.md'), roots), { code: 'staged_file_not_text' });
+  assert.throws(() => stageFilePayload(join(dir, 'missing.md'), join(dir, 'out.md'), roots), { code: 'connector_read_failed' });
+  assert.throws(() => stageFilePayload('relative.md', join(dir, 'out.md'), roots), { code: 'invalid_locator' });
+  assert.throws(() => stageFilePayload(staged, join(dir, 'out.md'), { roots: [dir], maxBytes: 4 }), { code: 'file_too_large' });
 });

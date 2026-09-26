@@ -9,12 +9,11 @@ Guard every outward write before it happens and verify it before claiming comple
 
 ## Guarded write sequence
 
-1. `receipts.digest` with the exact approved payload, once. Every later call takes the digest, never the content.
-2. `receipts.policy` (optional) with the approved action: registered surface, exact destination account, immutable attempt ID, caller-supplied action UUID, explicit approval ID, and the digest. `allowed` is not a reservation.
-3. `receipts.claim` with the same action. `CLAIMED` returns a lease. `DUPLICATE` means an execution already exists for this account and action, or the approval is spent: reconcile with `receipts.observe`; never write again. `policy_denied` reserves nothing: stop and report the rule.
-4. `receipts.dispatch` with the lease, immediately before the write. `AUTHORIZED` records that the write may happen. `policy_denied` means the shared budget moved: call `receipts.release`, stop, and report the rule.
-5. Perform exactly one outward write with your own tool. Never dispatch the same lease twice. A crash after dispatch is uncertain until the destination is read back.
-6. `receipts.observe` with the real locator or object ID. A matching independent read binds the object and completes the lease. Without a configured connector, `receipts.record` the observation, `receipts.bind`, then `receipts.complete`.
+1. `receipts.prepare` with the approved action (registered surface, exact destination account, immutable attempt ID, caller-supplied action UUID, explicit approval ID) and exactly one of `payload` (the exact approved content) or `file`. For a file write, author the content into a staging file first and pass `file: { source, destination }`, so the claim covers bytes that cannot drift. `CLAIMED` returns a lease. `DUPLICATE` carries a reason and a hint: reconcile with `receipts.observe` for `completed` or `dispatched`, wait for `active_claim`, and request a separate approval for `approval_reused`. `policy_denied` reserves nothing: stop and report the rule. `receipts.digest`, `receipts.policy`, and `receipts.claim` remain available as separate steps.
+2. `receipts.dispatch` with the lease, immediately before the write. `AUTHORIZED` records that the write may happen. `policy_denied` means the shared budget moved: call `receipts.release`, stop, and report the rule.
+3. Perform exactly one outward write with your own tool. After a staged prepare, copy the staged file to its destination unchanged; never re-author it. Never dispatch the same lease twice. A crash after dispatch is uncertain until the destination is read back.
+4. `receipts.observe` with the real locator or object ID and the same attempt ID. A matching independent read binds the object and completes the lease. `package_unverified` means the bytes written differ from the claimed bytes; follow its hint and do not write again. Without a configured connector, `receipts.record` the observation, `receipts.bind`, then `receipts.complete`.
+5. `receipts.sign` only when a shareable proof is requested and a key is configured.
 
 Keep the lease token out of evidence, reports, summaries, and logs. It is your authority for dispatch and release; only its hash is audited.
 

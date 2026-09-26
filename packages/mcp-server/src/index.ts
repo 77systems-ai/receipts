@@ -11,6 +11,7 @@ import {
 } from '@77systems/receipts-core';
 import { digestPayload, PAYLOAD_ENCODING } from '@77systems/receipts-sdk';
 import { signReceipt, renderReceiptBadge } from '@77systems/receipts-proof';
+import { stageFilePayload } from '@77systems/receipts-file';
 import { PACKAGE_VERSION } from './version.js';
 
 const text = z.string().min(1);
@@ -70,10 +71,7 @@ const approvedActionSchema = z.object({
 const claimLeaseSchema = approvedActionSchema.extend({
   leaseId: text, token: text, expiresAt: text, fence: z.number().int().positive(),
 }).strict();
-export const RECEIPTS_TOOL_NAMES = [
-  'receipts.classify','receipts.record','receipts.bind','receipts.verify','receipts.observe','receipts.recheck',
-  'receipts.digest','receipts.policy','receipts.claim','receipts.dispatch','receipts.release','receipts.complete','receipts.sign','receipts.badge',
-] as const;
+export { RECEIPTS_TOOL_NAMES, type ReceiptsToolName } from './tools.js';
 
 
 async function result(action: () => object | Promise<object>): Promise<CallToolResult> {
@@ -113,9 +111,12 @@ export interface ServerOptions {
   claimTtlMs?: number;
   /** Opt-in local Ed25519 private key (PEM PKCS8 or KeyObject) for receipts.sign and receipts.badge. Never audited. */
   signingKey?: string | KeyObject;
+  /** Absolute roots for claiming from staged files (receipts.prepare with file). Staging is disabled without them. */
+  fileRoots?: readonly string[];
 }
 
 interface ResolvedConfig {
+  fileRoots?: readonly string[];
   audit: AuditStore;
   connectors: readonly TrustedConnector[];
   policy?: WritePolicy;
@@ -135,11 +136,12 @@ function resolveSigningKey(signingKey: string | KeyObject | undefined): KeyObjec
 }
 
 /** Startup fails closed on an invalid policy, TTL, or key; nothing here performs I/O. */
-function resolveConfig({ store, connectors = [], policy, claimTtlMs, signingKey }: ServerOptions): ResolvedConfig {
+function resolveConfig({ store, connectors = [], policy, claimTtlMs, signingKey, fileRoots }: ServerOptions): ResolvedConfig {
   const audit = store ?? getDefaultStore();
   if (policy !== undefined) validatePolicy(policy);
   return {
     audit, connectors,
+    ...(fileRoots !== undefined ? { fileRoots: [...fileRoots] } : {}),
     ...(policy !== undefined ? { policy: structuredClone(policy) } : {}),
     registry: createIdempotencyRegistry({ store: audit, ...(claimTtlMs !== undefined ? { ttlMs: claimTtlMs } : {}) }),
     ...(signingKey !== undefined ? { privateKey: resolveSigningKey(signingKey) } : {}),
@@ -172,7 +174,13 @@ function validateReceiptUrl(receiptUrl: string | undefined): void {
   }
 }
 
-function buildServer({ audit, connectors, policy, registry, privateKey }: ResolvedConfig): McpServer {
+/** Non-complete verdicts are answers, not errors; attach the taxonomy's guidance so an agent knows the next step. */
+function verdictGuided<T extends { verdict: string }>(receipt: T): T & { hint?: string; docs?: string } {
+  const entry = receipt.verdict === 'complete' ? undefined : describeError(receipt.verdict);
+  return entry ? { ...receipt, hint: entry.fix, docs: entry.docs } : receipt;
+}
+
+function buildServer({ audit, connectors, policy, registry, privateKey, fileRoots }: ResolvedConfig): McpServer {
   const server = new McpServer({ name: 'receipts', version: PACKAGE_VERSION });
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const appendOnly = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
@@ -223,7 +231,7 @@ function buildServer({ audit, connectors, policy, registry, privateKey }: Resolv
       const connector = connectors.find(item => item.surface === request.surface);
       if (!connector) throw new ReceiptsError('connector_not_configured','Configure this connector locally before requesting an independent read.');
       const receipt = await observeDestination(connector,{...request,recheck} as ConnectorRequest,audit);
-      if (receipt.verdict !== 'complete') return receipt;
+      if (receipt.verdict !== 'complete') return verdictGuided(receipt);
       // Mirror the SDK: a bound independent read completes the audited lease for this attempt.
       // Legacy or cooperative attempts without a lease are returned unchanged; no lease is invented.
       const entries = audit.read();
@@ -262,6 +270,38 @@ function buildServer({ audit, connectors, policy, registry, privateKey }: Resolv
     inputSchema: { action: approvedActionSchema },
     annotations: appendOnly,
   }, ({ action }) => result(() => guided(registry.claim(action, policy ?? {}))));
+  server.registerTool('receipts.prepare', {
+    title: 'Prepare a guarded write',
+    description: 'Digest, policy, and claim in one call: the recommended first step of a guarded write. Pass the approved action (without packageDigest) and exactly one of payload (any approved JSON value) or file ({ source, destination }, file-write surface only). With file, the server reads the staged source file and claims its exact bytes for the destination path, so the content cannot be re-authored between approval and write. Returns packageDigest, policy, and the admission decision: CLAIMED with a claim lease, DUPLICATE with a reason, or policy_denied naming the rule (nothing reserved). After CLAIMED: receipts.dispatch with the claim immediately before the one outward write (with file: copy the staged file to destination byte-for-byte, never rewrite it), then receipts.observe. Observe and sign stay separate because they happen after the write.',
+    inputSchema: {
+      action: approvedActionSchema.omit({ packageDigest: true }),
+      payload: z.unknown().optional(),
+      file: z.object({ source: text, destination: text }).strict().optional(),
+    },
+    annotations: appendOnly,
+  }, ({ action, payload, file }) => result(() => {
+    if ((payload === undefined) === (file === undefined)) throw new ReceiptsError('invalid_prepare', 'Pass exactly one of payload or file.');
+    let approved: unknown = payload;
+    if (file !== undefined) {
+      if (action.surface !== 'file-write') throw new ReceiptsError('invalid_file_payload', 'Claiming from a staged file is only available for the file-write surface; pass payload for other surfaces.');
+      if (!fileRoots) throw new ReceiptsError('file_staging_not_configured', 'Configure RECEIPTS_FILE_ROOTS before claiming from staged files.');
+      approved = stageFilePayload(file.source, file.destination, { roots: fileRoots });
+    }
+    const { packageDigest, encoding } = digestApprovedPayload(approved);
+    // Claim evaluates the host policy before reserving, and refuses by identity first; nothing else is recorded here.
+    const decision = guided(registry.claim({ ...action, packageDigest }, policy ?? {}));
+    const policyResult = decision.verdict === 'policy_denied' ? { verdict: 'policy_denied', ruleId: decision.ruleId }
+      : decision.verdict === 'CLAIMED' ? { verdict: 'allowed' } : { verdict: 'not_evaluated' };
+    return {
+      packageDigest, encoding,
+      ...(file !== undefined ? { destination: file.destination.trim() } : {}),
+      policy: policyResult, policyConfigured: policy !== undefined,
+      ...decision,
+      ...(decision.verdict === 'CLAIMED' ? { next: file !== undefined
+        ? 'Call receipts.dispatch with this claim, copy the staged file to destination byte-for-byte, then receipts.observe with locator { path: destination } and this attemptId.'
+        : 'Call receipts.dispatch with this claim, perform exactly one outward write of this payload, then receipts.observe with the real locator and this attemptId.' } : {}),
+    };
+  }));
   server.registerTool('receipts.dispatch', {
     title: 'Dispatch claimed write',
     description: 'Durably record, immediately before the outward write, that the write may happen (delivery_unknown until observed) and consume the shared rate budget. After AUTHORIZED perform exactly one write with your own tool, then call receipts.observe with the real locator and the same attemptId (or receipts.record, receipts.bind, and receipts.complete). On policy_denied call receipts.release and stop. Never dispatch the same claim twice. Refusals: duplicate_attempt means this action already has a possible or observed write, so reconcile it instead; approval_reused means another action spent the approval; claim_expired or stale_claim means claim again. A crash after dispatch is uncertain forever until the destination is read back.',
