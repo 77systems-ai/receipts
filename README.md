@@ -172,12 +172,14 @@ Every persisted entry is hash chained. A retained head checkpoint detects local 
 - `receipts-core`: dependency-free classification, registry, audit, bindings and connector contract.
 - `receipts-sdk`: canonical payload hashing and durable executor guard.
 - `receipts-github`: independent GitHub issues reader.
+- `receipts-file`: independent local file-write reader.
+- `receipts-gmail`: independent Gmail send reader (operator-supplied mail client).
 - `receipts-conformance`: scored failure-case suite and versioned evaluation receipts.
 - `receipts-proof`: local signatures, offline chain verification and static badges.
 - `receipts-otel`: explicit OpenTelemetry instrumentation with digest-only attributes.
 - `receipts-mcp`, `receipts-rest`, `receipts-claude-plugin`: integration surfaces.
 
-All packages use the `@77systems/` npm scope. v0.1 logs remain readable with cooperative provenance, and v0.2 claims remain reconcilable without inventing leases. New durable actions require `actionId` (UUID), `destinationAccount`, and `approvalId`; existing integrations must add those identities before writing v0.2 entries. Legacy generic surface registrations remain available; GitHub issues is the only added provider integration.
+All packages use the `@77systems/` npm scope. v0.1 logs remain readable with cooperative provenance, and v0.2 claims remain reconcilable without inventing leases. New durable actions require `actionId` (UUID), `destinationAccount`, and `approvalId`; existing integrations must add those identities before writing v0.2 entries. Legacy generic surface registrations remain available; GitHub issues, file-write, and email-send are the bundled example integrations.
 
 The entire local mechanism is MIT licensed. No signup, hosted infrastructure, UI, billing, or marketplace submission is included.
 

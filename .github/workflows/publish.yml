@@ -1,0 +1,26 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # OIDC for npm trusted publishing (no tokens stored)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm test
+      - name: Publish public workspaces
+        run: |
+          for pkg in receipts-core receipts-mcp receipts-sdk receipts-rest receipts-claude-plugin; do
+            npm publish -w @77systems/$pkg --provenance --access public
+          done

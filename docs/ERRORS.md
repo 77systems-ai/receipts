@@ -258,6 +258,12 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 **Suggested fix.** Return observedAt as an ISO-8601 string from the connector's own read.
 
+### invalid_locator
+
+**Probable cause.** A connector locator is missing or unsafe: locator.issueNumber is not a positive safe integer, locator.path is not an absolute file path, or locator.messageId is empty.
+
+**Suggested fix.** Provide the locator in the surface's canonical form: a positive integer issue number, an absolute file path, or the message id from the send result. Unsafe locators are rejected before any destination read.
+
 ## SDK executor errors
 
 ### duplicate_write_refused
@@ -292,12 +298,6 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 **Suggested fix.** Configure a read timeout within that range.
 
-### invalid_locator
-
-**Probable cause.** locator.issueNumber is missing when no destinationId was supplied, or is not a positive safe integer.
-
-**Suggested fix.** Provide a positive integer issue number, or the previously observed github:issue destinationId. Unsafe locators are rejected before credentials are used.
-
 ### missing_github_token
 
 **Probable cause.** No token was configured and neither GITHUB_TOKEN nor GH_TOKEN is set locally.
@@ -322,13 +322,53 @@ Two rules hold for every entry: no fix ever repeats an uncertain outward write, 
 
 **Suggested fix.** Pull requests are outside the GitHub issues surface. Use the issue number of an actual issue.
 
+## File connector
+
+### invalid_file_payload
+
+**Probable cause.** filePayload received an empty path, or content that is neither a string nor null.
+
+**Suggested fix.** Pass the absolute file path and the full final content string (null becomes an empty string).
+
+### invalid_file_account
+
+**Probable cause.** The file connector's account id is empty.
+
+**Suggested fix.** Configure a nonempty accountId, or set RECEIPTS_FILE_ACCOUNT locally. It must match the claim's destinationAccount.
+
+### invalid_file_roots
+
+**Probable cause.** An allowed root is not an absolute path.
+
+**Suggested fix.** Configure allowed roots as absolute paths, or set RECEIPTS_FILE_ROOTS as a colon-separated list of absolute paths.
+
+## Gmail connector
+
+### invalid_gmail_payload
+
+**Probable cause.** canonicalGmailPayload received a missing or blank recipient, or a subject or body that is not a string.
+
+**Suggested fix.** Pass the approved recipient, subject string, and body string. Addresses are trimmed; cc, bcc, and html are optional.
+
+### invalid_gmail_account
+
+**Probable cause.** The Gmail connector's account label is empty.
+
+**Suggested fix.** Pass a nonempty account label, for example the mailbox address. It must match the claim's destinationAccount.
+
+### invalid_gmail_client
+
+**Probable cause.** No getMessage function was supplied to the Gmail connector.
+
+**Suggested fix.** Inject an authenticated Gmail read of the form (messageId) => users.messages.get with format=full.
+
 ## MCP server tools and startup
 
 ### connector_not_configured
 
 **Probable cause.** receipts.observe or receipts.recheck was called for a surface that has no locally configured connector.
 
-**Suggested fix.** Configure the connector at startup (for GitHub set RECEIPTS_GITHUB_REPO and a local token, or pass connectors programmatically). Request data cannot install a connector.
+**Suggested fix.** Configure the connector at startup (for GitHub set RECEIPTS_GITHUB_REPO and a local token, for Gmail set RECEIPTS_GMAIL_ACCOUNT and RECEIPTS_GMAIL_TOKEN, for files set RECEIPTS_FILE_ACCOUNT and optionally RECEIPTS_FILE_ROOTS, or pass connectors programmatically). Request data cannot install a connector.
 
 ### receipt_not_found
 

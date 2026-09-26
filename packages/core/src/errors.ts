@@ -6,7 +6,7 @@
  * source without an entry here. Entries describe causes and fixes; they never echo
  * payloads, identifiers, credentials, or provider messages.
  */
-export type ErrorFamily = "input" | "audit" | "admission" | "connector" | "sdk" | "github" | "mcp" | "rest" | "proof" | "conformance" | "plugin";
+export type ErrorFamily = "input" | "audit" | "admission" | "connector" | "sdk" | "github" | "file" | "gmail" | "mcp" | "rest" | "proof" | "conformance" | "plugin";
 
 export interface ErrorTaxonomyEntry {
   readonly code: string;
@@ -28,6 +28,8 @@ export const ERROR_FAMILIES: Readonly<Record<ErrorFamily, string>> = Object.free
   connector: "Destination connector reads",
   sdk: "SDK executor errors",
   github: "GitHub issues connector",
+  file: "File connector",
+  gmail: "Gmail connector",
   mcp: "MCP server tools and startup",
   rest: "REST transport",
   proof: "Signed proofs and badges",
@@ -164,6 +166,9 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
   invalid_observation: ["connector",
     "The connector returned an observation without a valid ISO timestamp.",
     "Return observedAt as an ISO-8601 string from the connector's own read."],
+  invalid_locator: ["connector",
+    "A connector locator is missing or unsafe: locator.issueNumber is not a positive safe integer, locator.path is not an absolute file path, or locator.messageId is empty.",
+    "Provide the locator in the surface's canonical form: a positive integer issue number, an absolute file path, or the message id from the send result. Unsafe locators are rejected before any destination read."],
   // ---- sdk -----------------------------------------------------------------
   duplicate_write_refused: ["sdk",
     "DuplicateWriteError: the account and action already have an execution claim or a possible write, the approval was already spent, or another live reservation exists (the persisted decision carries the audited reason).",
@@ -181,9 +186,6 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
   invalid_timeout: ["github",
     "timeoutMs is outside 1 to 60000 milliseconds.",
     "Configure a read timeout within that range."],
-  invalid_locator: ["github",
-    "locator.issueNumber is missing when no destinationId was supplied, or is not a positive safe integer.",
-    "Provide a positive integer issue number, or the previously observed github:issue destinationId. Unsafe locators are rejected before credentials are used."],
   missing_github_token: ["github",
     "No token was configured and neither GITHUB_TOKEN nor GH_TOKEN is set locally.",
     "Export GITHUB_TOKEN or GH_TOKEN in the local environment, or pass token explicitly. Tokens are sent only to api.github.com and never audited."],
@@ -196,10 +198,30 @@ const table: Readonly<Record<string, readonly [ErrorFamily, string, string]>> = 
   not_a_github_issue: ["github",
     "The requested number is a pull request.",
     "Pull requests are outside the GitHub issues surface. Use the issue number of an actual issue."],
+  // ---- file ------------------------------------------------------------------
+  invalid_file_payload: ["file",
+    "filePayload received an empty path, or content that is neither a string nor null.",
+    "Pass the absolute file path and the full final content string (null becomes an empty string)."],
+  invalid_file_account: ["file",
+    "The file connector's account id is empty.",
+    "Configure a nonempty accountId, or set RECEIPTS_FILE_ACCOUNT locally. It must match the claim's destinationAccount."],
+  invalid_file_roots: ["file",
+    "An allowed root is not an absolute path.",
+    "Configure allowed roots as absolute paths, or set RECEIPTS_FILE_ROOTS as a colon-separated list of absolute paths."],
+  // ---- gmail -----------------------------------------------------------------
+  invalid_gmail_payload: ["gmail",
+    "canonicalGmailPayload received a missing or blank recipient, or a subject or body that is not a string.",
+    "Pass the approved recipient, subject string, and body string. Addresses are trimmed; cc, bcc, and html are optional."],
+  invalid_gmail_account: ["gmail",
+    "The Gmail connector's account label is empty.",
+    "Pass a nonempty account label, for example the mailbox address. It must match the claim's destinationAccount."],
+  invalid_gmail_client: ["gmail",
+    "No getMessage function was supplied to the Gmail connector.",
+    "Inject an authenticated Gmail read of the form (messageId) => users.messages.get with format=full."],
   // ---- mcp -----------------------------------------------------------------
   connector_not_configured: ["mcp",
     "receipts.observe or receipts.recheck was called for a surface that has no locally configured connector.",
-    "Configure the connector at startup (for GitHub set RECEIPTS_GITHUB_REPO and a local token, or pass connectors programmatically). Request data cannot install a connector."],
+    "Configure the connector at startup (for GitHub set RECEIPTS_GITHUB_REPO and a local token, for Gmail set RECEIPTS_GMAIL_ACCOUNT and RECEIPTS_GMAIL_TOKEN, for files set RECEIPTS_FILE_ACCOUNT and optionally RECEIPTS_FILE_ROOTS, or pass connectors programmatically). Request data cannot install a connector."],
   receipt_not_found: ["mcp",
     "receipts.sign or receipts.badge found no historical complete receipt for the object, digest, and scope.",
     "Verify the identity with receipts.verify. Observe and bind the object first; a receipt cannot be signed before it exists."],
