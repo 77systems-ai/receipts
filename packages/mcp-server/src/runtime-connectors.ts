@@ -1,5 +1,6 @@
 import { delimiter } from 'node:path';
 import type { TrustedConnector } from '@77systems/receipts-core';
+import { PACKAGE_VERSION } from './version.js';
 import { createGitHubIssuesConnector } from '@77systems/receipts-github';
 import { createFileConnector } from '@77systems/receipts-file';
 import { createGmailConnector, type GmailMessage, type GmailMessageFetcher } from '@77systems/receipts-gmail';
@@ -24,7 +25,7 @@ export function configuredConnectors(): readonly TrustedConnector[] {
       try {
         response = await fetch(url, {
           method: 'GET', redirect: 'error', signal: AbortSignal.timeout(10000),
-          headers: { authorization: `Bearer ${gmailToken}`, 'user-agent': 'receipts/0.3.0' },
+          headers: { authorization: `Bearer ${gmailToken}`, 'user-agent': `receipts/${PACKAGE_VERSION}` },
         });
       } catch {
         throw new Error('Gmail could not be read.');

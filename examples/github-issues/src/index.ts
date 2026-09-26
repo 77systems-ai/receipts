@@ -6,6 +6,9 @@ import { dirname, resolve } from 'node:path';
 import { JsonlAuditStore, getReceipt, classify } from '@77systems/receipts-core';
 import { createReceipts, DuplicateWriteError, digestPayload } from '@77systems/receipts-sdk';
 import { createGitHubIssuesConnector, GITHUB_ISSUE_SURFACE, githubAccount, githubIssuePayload } from '@77systems/receipts-github';
+import { createRequire } from 'node:module';
+
+const PACKAGE_VERSION: string = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
 
 let stage = 'configuration';
 async function main(): Promise<void> {
@@ -33,7 +36,7 @@ async function main(): Promise<void> {
   const payload=githubIssuePayload(`[Receipts synthetic test] ${actionId}`,'Synthetic destination-verification fixture. No production data. This issue is created once, independently read, edited to verify historical receipts, and closed.');
   if(prior) assert.equal(digestPayload(payload),prior.packageDigest);
   const base=`https://api.github.com/repos/${owner}/${repo}/issues`;
-  const headers={authorization:`Bearer ${token}`,accept:'application/vnd.github+json','content-type':'application/json','X-GitHub-Api-Version':'2026-03-10','user-agent':'receipts-live-example/0.3.0'};
+  const headers={authorization:`Bearer ${token}`,accept:'application/vnd.github+json','content-type':'application/json','X-GitHub-Api-Version':'2026-03-10','user-agent':`receipts-live-example/${PACKAGE_VERSION}`};
   let writes=0;
   const execution={surface:GITHUB_ISSUE_SURFACE,attemptId,actionId,approvalId,destinationAccount:account,payload,
     execute:async ({payload:approved}:{payload:Readonly<typeof payload>}) => {

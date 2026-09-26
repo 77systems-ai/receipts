@@ -16,6 +16,8 @@ import { digestPayload } from '@77systems/receipts-sdk';
 import { generateReceiptKeyPair, verifySignedReceipt } from '@77systems/receipts-proof';
 import { createReceiptsServer, startHttpServer } from '../dist/index.js';
 
+const MCP_VERSION = (JSON.parse(await readFile(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
+
 /** Child processes start from the runner's environment minus every Receipts setting, so a developer's exports cannot change behavior under test. */
 function childEnv(overrides: Record<string, string> = {}): Record<string, string> {
   const base = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
@@ -273,14 +275,14 @@ test('doctor boots through an executable link and checks credentials without exp
   assert.equal(run.status,0,run.stderr);
   const report = JSON.parse(run.stdout);
   assert.equal(report.ok,true);
-  assert.equal(report.version,'0.3.0');
+  assert.equal(report.version,MCP_VERSION);
   assert.ok(report.checks.every((check: {name:unknown;ok:unknown;detail:unknown}) => typeof check.name === 'string' && typeof check.ok === 'boolean' && typeof check.detail === 'string'));
   assert.ok(report.checks.some((check: {name:string;ok:boolean}) => check.name === 'mcp_tools' && check.ok));
   assert.ok(!`${run.stdout}${run.stderr}`.includes(secret));
   // The default rendering is for people; --json is the machine-readable contract and stdout carries nothing else.
   const human = spawnSync(process.execPath,[doctor,'doctor'], { encoding:'utf8', env: configured, timeout:15000 });
   assert.equal(human.status,0,human.stderr);
-  assert.match(human.stdout,/receipts doctor \(@77systems\/receipts-mcp 0\.3\.0\)/);
+  assert.ok(human.stdout.includes(`receipts doctor (@77systems/receipts-mcp ${MCP_VERSION})`));
   assert.match(human.stdout,/ok {2,}mcp_tools/);
   assert.match(human.stdout,/Result: ok/);
   assert.throws(() => JSON.parse(human.stdout));
@@ -314,7 +316,7 @@ test('bug-report assembles a redacted support bundle and never emits values, ide
   assert.equal(run.status,0,run.stderr);
   const report = JSON.parse(run.stdout);
   for (const secret of secrets) assert.ok(!`${run.stdout}${run.stderr}`.includes(secret), `bundle leaked ${secret}`);
-  assert.match(report.title,/^Bug report: @77systems\/receipts-mcp 0\.3\.0 \(/);
+  assert.ok(report.title.startsWith(`Bug report: @77systems/receipts-mcp ${MCP_VERSION} (`));
   for (const heading of ['## Summary','## Steps to reproduce','## Environment','## Packages','## Configuration','## Doctor','## Audit health']) assert.ok(report.body.includes(heading), heading);
   assert.equal(report.bundle.configuration.GITHUB_TOKEN,'present');
   assert.equal(report.bundle.configuration.GH_TOKEN,'absent');
@@ -322,7 +324,7 @@ test('bug-report assembles a redacted support bundle and never emits values, ide
   assert.equal(report.bundle.configuration.RECEIPTS_CLAIM_TTL_MS,'absent');
   assert.equal(report.bundle.configuration.RECEIPTS_GMAIL_TOKEN,'present');
   assert.equal(report.bundle.configuration.RECEIPTS_FILE_ROOTS,'absent');
-  assert.equal(report.bundle.packages['@77systems/receipts-mcp'],'0.3.0');
+  assert.equal(report.bundle.packages['@77systems/receipts-mcp'],MCP_VERSION);
   assert.equal(report.bundle.doctor,null);
   assert.deepEqual({ ...report.bundle.audit, tail: undefined }, { location:'environment', exists:true, entries:1, headCheckpoint:true, chain:'valid', tail:undefined });
   assert.deepEqual(report.bundle.audit.tail.map((entry: {event:string;verdict:string;surface:string;admission:string|null}) => [entry.event, entry.verdict, entry.surface, entry.admission]), [['attempt','delivery_unknown','social-publish',null]]);

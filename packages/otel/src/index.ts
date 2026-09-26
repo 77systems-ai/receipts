@@ -1,6 +1,9 @@
 import { trace, SpanStatusCode, type Attributes, type Span, type Tracer } from '@opentelemetry/api';
 import { bind, classify, getDefaultStore, observeDestination, type AuditStore, type Binding, type ConnectorRequest, type DestinationConnector, type OutwardWrite, type Receipt, type ReceiptScope } from '@77systems/receipts-core';
 import { createReceipts, type ExecutionReceipt, type ReceiptsOptions, type ExecuteOptions, type ReconcileOptions } from '@77systems/receipts-sdk';
+import { createRequire } from 'node:module';
+
+const PACKAGE_VERSION: string = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
 
 const verdicts=new Set(['complete','delivery_unknown','package_unverified','prewrite','DUPLICATE','policy_denied']);
 const digest=(value:unknown):value is string=>typeof value==='string'&&/^sha256:[a-f0-9]{64}$/.test(value);
@@ -18,7 +21,7 @@ function attributes(result:unknown, packageDigest?:string):Attributes {
 
 /** Optional instrumentation only. No exporter is installed and no network calls are made here. */
 export function createReceiptsTelemetry(options:{tracer?:Tracer;store?:AuditStore}={}) {
-  const tracer=options.tracer??trace.getTracer('@77systems/receipts-otel','0.3.0');
+  const tracer=options.tracer??trace.getTracer('@77systems/receipts-otel',PACKAGE_VERSION);
   const store=options.store??getDefaultStore();
   // Instrumentation failure must not alter verification or permit another write.
   function start(name:string, packageDigest?:string):Span|undefined {

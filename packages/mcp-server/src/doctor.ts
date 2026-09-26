@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -7,7 +6,8 @@ import { RECEIPTS_TOOL_NAMES } from './index.js';
 export interface DoctorCheck { name: string; ok: boolean; detail: string }
 export interface DoctorReport { ok: boolean; version: string; checks: DoctorCheck[] }
 
-export const PACKAGE_VERSION: string = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
+import { PACKAGE_VERSION } from './version.js';
+export { PACKAGE_VERSION };
 
 /** Boot the real MCP executable and inspect its tools, without reading a destination or printing any configured value. */
 export async function doctor(): Promise<DoctorReport> {

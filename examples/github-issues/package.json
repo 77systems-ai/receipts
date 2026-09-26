@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-github-example",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,8 +9,8 @@
     "demo": "node dist/index.js"
   },
   "dependencies": {
-    "@77systems/receipts-core": "0.3.0",
-    "@77systems/receipts-sdk": "0.3.0",
-    "@77systems/receipts-github": "0.3.0"
+    "@77systems/receipts-core": "0.4.0",
+    "@77systems/receipts-sdk": "0.4.0",
+    "@77systems/receipts-github": "0.4.0"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Destination verification and append-only receipts for every AI agent.",
   "keywords": [
     "receipts",

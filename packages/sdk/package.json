@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Enforced destination verification for agent executors.",
   "keywords": [
     "receipts",
@@ -39,7 +39,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@77systems/receipts-core": "0.3.0"
+    "@77systems/receipts-core": "0.4.0"
   },
   "publishConfig": {
     "access": "public"

@@ -1,6 +1,6 @@
 {
   "name": "@77systems/receipts-github",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "license": "MIT",
   "description": "Local, independently verified GitHub issue receipts.",
@@ -39,8 +39,8 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@77systems/receipts-core": "0.3.0",
-    "@77systems/receipts-sdk": "0.3.0"
+    "@77systems/receipts-core": "0.4.0",
+    "@77systems/receipts-sdk": "0.4.0"
   },
   "publishConfig": {
     "access": "public"
@@ -51,6 +51,6 @@
     "directory": "packages/connector-github"
   },
   "devDependencies": {
-    "@77systems/receipts-conformance": "0.3.0"
+    "@77systems/receipts-conformance": "0.4.0"
   }
 }

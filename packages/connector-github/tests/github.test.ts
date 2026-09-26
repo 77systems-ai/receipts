@@ -7,6 +7,7 @@ import { assessCertification, connectorConformance, evaluationDigest, type Evalu
 import { digestPayload } from '@77systems/receipts-sdk';
 import { createGitHubIssuesConnector, githubAccount, githubIssuePayload, GITHUB_ISSUE_SURFACE } from '../dist/index.js';
 
+const VERSION = (JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
 const token = 'secret-fixture-token-do-not-retain';
 const payload = githubIssuePayload('synthetic title','synthetic body');
 const responseData = () => ({id:123456,number:42,repository_url:'https://api.github.com/repos/fixture/test',url:'https://api.github.com/repos/fixture/test/issues/42',...payload});
@@ -34,11 +35,11 @@ connectorConformance('GitHub issues connector', (context) => {
     setWrongAccount(){state={...state,repository_url:'https://api.github.com/repos/another/test'};},
     setReadFailure(message){readFailure=message;},
   };
-}, {connectorVersion:'0.3.0',seed:'github-v0.3.0',
+}, {connectorVersion:VERSION,seed:`github-v${VERSION}`,
   // Ordinary test runs write under ignored .receipts/ so the published evaluation never
-  // churns with a developer's Node version or platform. `npm run evaluate:github`
-  // regenerates docs/evaluations/github-0.3.0.json deliberately.
-  evaluationPath:process.env.RECEIPTS_EVALUATION_PATH ?? '.receipts/evaluations/github-0.3.0.json'});
+  // churns with a developer's Node version or platform. `npm run evaluate:connectors`
+  // regenerates docs/evaluations/github-<version>.json deliberately.
+  evaluationPath:process.env.RECEIPTS_EVALUATION_PATH ?? `.receipts/evaluations/github-${VERSION}.json`});
 
 test('GitHub validates the exact object and rejects cross-repository data, pull requests, and changed immutable IDs', async t => {
   let state: Record<string,unknown> = responseData();
@@ -116,10 +117,9 @@ test('GitHub falls through an empty environment token to GH_TOKEN without overri
 });
 
 test('the committed public GitHub evaluation matches the current benchmark and connector version', () => {
-  // `npm test` never rewrites this artifact; `npm run evaluate:github` regenerates it deliberately.
-  const evaluation = JSON.parse(readFileSync(fileURLToPath(new URL('../../../docs/evaluations/github-0.3.0.json', import.meta.url)), 'utf8')) as EvaluationReceipt;
-  const version = (JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
-  assert.equal(evaluation.connector.version, version, 'run npm run evaluate:github after a connector version change');
+  // `npm test` never rewrites this artifact; `npm run evaluate:connectors` regenerates it deliberately.
+  const evaluation = JSON.parse(readFileSync(fileURLToPath(new URL(`../../../docs/evaluations/github-${VERSION}.json`, import.meta.url)), 'utf8')) as EvaluationReceipt;
+  assert.equal(evaluation.connector.version, VERSION, 'run npm run evaluate:connectors after a connector version change');
   assert.equal(evaluation.connector.name, 'GitHub issues connector');
   assert.equal(evaluation.summary.conforms, true);
   assert.deepEqual(assessCertification(evaluation).reasons, ['published_evaluation_declaration_required'], 'the committed evaluation must be conformant and only lack a publication declaration');

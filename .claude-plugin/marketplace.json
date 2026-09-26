@@ -1,5 +1,5 @@
 {
   "name": "77systems",
   "owner": {"name": "77systems"},
-  "plugins": [{"name": "receipts", "source": "./packages/claude-plugin", "description": "Verification for every AI agent.", "version": "0.3.0"}]
+  "plugins": [{"name": "receipts", "source": "./packages/claude-plugin", "description": "Verification for every AI agent.", "version": "0.4.0"}]
 }

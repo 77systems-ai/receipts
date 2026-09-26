@@ -11,6 +11,7 @@ import {
 } from '@77systems/receipts-core';
 import { digestPayload, PAYLOAD_ENCODING } from '@77systems/receipts-sdk';
 import { signReceipt, renderReceiptBadge } from '@77systems/receipts-proof';
+import { PACKAGE_VERSION } from './version.js';
 
 const text = z.string().min(1);
 const evidenceSchema = z.object({
@@ -172,7 +173,7 @@ function validateReceiptUrl(receiptUrl: string | undefined): void {
 }
 
 function buildServer({ audit, connectors, policy, registry, privateKey }: ResolvedConfig): McpServer {
-  const server = new McpServer({ name: 'receipts', version: '0.3.0' });
+  const server = new McpServer({ name: 'receipts', version: PACKAGE_VERSION });
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const appendOnly = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
   const historicalReceipt = (destinationId: string, packageDigest: string, scope?: z.infer<typeof scopeSchema>): Receipt => {

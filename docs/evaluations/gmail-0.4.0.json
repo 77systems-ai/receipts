@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "receipts-evaluation-v1",
+  "benchmark": {
+    "name": "receipts-connector-conformance",
+    "version": "2.0.0"
+  },
+  "connector": {
+    "name": "Gmail connector",
+    "version": "0.4.0"
+  },
+  "provenance": {
+    "environment": {
+      "node": "22.22.2",
+      "platform": "linux",
+      "arch": "x64"
+    },
+    "seed": "gmail-v0.4.0",
+    "idGeneration": "sha256-seed-case-purpose-v1",
+    "execution": "local-controlled-fixture",
+    "authority": "self-attested"
+  },
+  "cases": [
+    {
+      "id": "127c6d5e-05f1-5fe5-93fe-77844d808dd4",
+      "name": "lost-response",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "uncertain-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "duplicate-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "recovered-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    },
+    {
+      "id": "b5f9cd2b-90b9-52b7-80ae-680ce78a38d1",
+      "name": "wrong-account",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "wrong-account-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "cf0fbb89-17bd-5ede-a27c-96eaf059b0c8",
+      "name": "changed-content",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "edited-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "3f797594-33ea-59df-a450-b70168807a4c",
+      "name": "timeout",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "timeout-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "timeout-duplicate-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "b5be507f-06c0-552f-b017-3f33211b4ab6",
+      "name": "forged-evidence",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "forged-independent-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "9e0cce43-3084-5c50-b84d-be32bb87f9fe",
+      "name": "reapproved-content",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "recycled-approval-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "new-approval-dispatch",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    },
+    {
+      "id": "7c81afa8-f98c-5c1d-a5da-ef574d1d7645",
+      "name": "recheck-history",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "unchanged-recheck-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        },
+        {
+          "name": "edited-recheck-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "historical-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    }
+  ],
+  "calibration": {
+    "falseComplete": {
+      "errors": 0,
+      "denominator": 6,
+      "planned": 6,
+      "unobserved": 0,
+      "rate": 0
+    },
+    "falseBlock": {
+      "errors": 0,
+      "denominator": 4,
+      "planned": 4,
+      "unobserved": 0,
+      "rate": 0
+    },
+    "unsafeDispatch": {
+      "errors": 0,
+      "denominator": 3,
+      "planned": 3,
+      "unobserved": 0,
+      "rate": 0
+    }
+  },
+  "summary": {
+    "passed": 7,
+    "failed": 0,
+    "notRun": 0,
+    "complete": true,
+    "conforms": true
+  }
+}

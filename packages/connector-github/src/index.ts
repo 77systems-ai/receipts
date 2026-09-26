@@ -1,5 +1,8 @@
 import { getSurface, registerSurface, ReceiptsError, type TrustedConnector, type ConnectorRequest } from '@77systems/receipts-core';
 import { digestPayload } from '@77systems/receipts-sdk';
+import { createRequire } from 'node:module';
+
+const PACKAGE_VERSION: string = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
 
 export const GITHUB_ISSUE_SURFACE = 'github-issue';
 const slug = /^[a-zA-Z0-9](?:[a-zA-Z0-9_.-]{0,99})$/;
@@ -64,7 +67,7 @@ export function createGitHubIssuesConnector(options: GitHubConnectorOptions): Tr
       try {
         response = await fetch(url, {
           method: 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-          headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': 'receipts/0.3.0' },
+          headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2026-03-10', 'user-agent': `receipts/${PACKAGE_VERSION}` },
         });
       } catch { return fail('github_read_failed', 'GitHub could not be read. The outcome remains unverified.'); }
       if (response.status !== 200) fail('github_read_failed', `GitHub read returned HTTP ${response.status}. No receipt was issued.`);

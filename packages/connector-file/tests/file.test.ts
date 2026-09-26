@@ -4,9 +4,13 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { connectorConformance } from '@77systems/receipts-conformance';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { assessCertification, connectorConformance, evaluationDigest, type EvaluationReceipt } from '@77systems/receipts-conformance';
 import { digestPayload } from '@77systems/receipts-sdk';
 import { createFileConnector, filePayload, normalizeFileContent, FILE_WRITE_SURFACE, type TrustedConnector } from '../dist/index.js';
+
+const VERSION = (JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
 
 const CONTENT = 'approved file content\nsecond line\n';
 const request = (destinationAccount: string, path: string, packageDigest: string) => ({
@@ -43,8 +47,9 @@ connectorConformance('File connector', (context) => {
     },
     dispose() { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); },
   };
-}, {connectorVersion:'0.3.0',seed:'file-v0.3.0',
-  evaluationPath:process.env.RECEIPTS_EVALUATION_PATH ?? '.receipts/evaluations/file-0.3.0.json'});
+}, {connectorVersion:VERSION,seed:`file-v${VERSION}`,
+  // Ordinary runs write under ignored .receipts/; `npm run evaluate:connectors` regenerates docs/evaluations deliberately.
+  evaluationPath:process.env.RECEIPTS_EVALUATION_PATH ?? `.receipts/evaluations/file-${VERSION}.json`});
 
 test('File rejects unsafe locators before touching the filesystem', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'receipts-file-'));
@@ -162,4 +167,15 @@ test('File admits files under a symlinked root and rejects relative or empty roo
   assert.equal(observed.packageDigest, digestPayload(filePayload(path, CONTENT)));
   for (const roots of [['relative/root'], []]) assert.throws(() => createFileConnector({ roots }), { code: 'invalid_file_roots' });
   assert.throws(() => createFileConnector({ accountId: 'bad\naccount' }), { code: 'invalid_file_account' });
+});
+
+test('the committed public File evaluation matches the current benchmark and connector version', () => {
+  // `npm test` never rewrites this artifact; `npm run evaluate:connectors` regenerates it deliberately.
+  const evaluation = JSON.parse(readFileSync(fileURLToPath(new URL(`../../../docs/evaluations/file-${VERSION}.json`, import.meta.url)), 'utf8')) as EvaluationReceipt;
+  assert.equal(evaluation.connector.version, VERSION, 'run npm run evaluate:connectors after a connector version change');
+  assert.equal(evaluation.connector.name, 'File connector');
+  assert.equal(evaluation.summary.conforms, true);
+  assert.deepEqual(assessCertification(evaluation).reasons, ['published_evaluation_declaration_required'], 'the committed evaluation must be conformant and only lack a publication declaration');
+  assert.match(evaluationDigest(evaluation), /^sha256:[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(evaluation), /\/home\/|\/Users\/|\/tmp\/|ya29\.|Bearer /, 'the public artifact carries no paths or credentials');
 });

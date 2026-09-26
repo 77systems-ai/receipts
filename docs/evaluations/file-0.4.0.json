@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "receipts-evaluation-v1",
+  "benchmark": {
+    "name": "receipts-connector-conformance",
+    "version": "2.0.0"
+  },
+  "connector": {
+    "name": "File connector",
+    "version": "0.4.0"
+  },
+  "provenance": {
+    "environment": {
+      "node": "22.22.2",
+      "platform": "linux",
+      "arch": "x64"
+    },
+    "seed": "file-v0.4.0",
+    "idGeneration": "sha256-seed-case-purpose-v1",
+    "execution": "local-controlled-fixture",
+    "authority": "self-attested"
+  },
+  "cases": [
+    {
+      "id": "37cd1b3a-caa7-5e5e-b829-76e8db1fc90a",
+      "name": "lost-response",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "uncertain-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "duplicate-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "recovered-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    },
+    {
+      "id": "6445be10-3702-5875-8e6d-6f8f4207dd71",
+      "name": "wrong-account",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "wrong-account-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "f327b99d-06ab-5007-975f-cda2fb563758",
+      "name": "changed-content",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "edited-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "11aed362-c950-59ab-816d-a042ec862da0",
+      "name": "timeout",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "timeout-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "timeout-duplicate-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "44c0821d-c881-5504-9fa4-f2647b712c2f",
+      "name": "forged-evidence",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "forged-independent-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        }
+      ]
+    },
+    {
+      "id": "4c7143ac-8dfa-5819-8bc5-cbd9526ac06b",
+      "name": "reapproved-content",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "recycled-approval-dispatch",
+          "kind": "unsafe-dispatch",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "new-approval-dispatch",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    },
+    {
+      "id": "88a5bde9-3c28-58aa-97d1-668dbe8b6d26",
+      "name": "recheck-history",
+      "status": "passed",
+      "decisions": [
+        {
+          "name": "unchanged-recheck-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        },
+        {
+          "name": "edited-recheck-completion",
+          "kind": "false-complete",
+          "expected": "reject",
+          "observed": "reject"
+        },
+        {
+          "name": "historical-completion",
+          "kind": "false-block",
+          "expected": "accept",
+          "observed": "accept"
+        }
+      ]
+    }
+  ],
+  "calibration": {
+    "falseComplete": {
+      "errors": 0,
+      "denominator": 6,
+      "planned": 6,
+      "unobserved": 0,
+      "rate": 0
+    },
+    "falseBlock": {
+      "errors": 0,
+      "denominator": 4,
+      "planned": 4,
+      "unobserved": 0,
+      "rate": 0
+    },
+    "unsafeDispatch": {
+      "errors": 0,
+      "denominator": 3,
+      "planned": 3,
+      "unobserved": 0,
+      "rate": 0
+    }
+  },
+  "summary": {
+    "passed": 7,
+    "failed": 0,
+    "notRun": 0,
+    "complete": true,
+    "conforms": true
+  }
+}

@@ -1,28 +1,30 @@
-# v0.3 release checklist
+# v0.4 release checklist
 
 Source repository: https://github.com/77systems-ai/receipts
 
-This milestone builds on merged v0.2 with atomic fenced claims, policy/rate admission, offline signed proofs/badges, scored conformance receipts and optional OTel. Publishing npm packages and submitting registries are separate actions. v0.3 does not alter an existing publishing workflow or claim a marketplace listing.
+v0.4.0 adds the fourteen-tool MCP surface (admission, policy, digests, signed proofs), the support CLI, the error taxonomy, and the file-write and Gmail send example connectors to the v0.3 admission, proof, conformance, and OTel work. Publishing npm packages and submitting to registries or marketplaces are separate, explicitly approved actions; nothing in this checklist implies either has happened.
 
 ## Validation
 
 Run `npm ci`, `npm test`, `npm run typecheck`, `npm run demo`, and `npm run pack:check`. The CI matrix runs Node 20, 22, and 24. Unit/integration tests exercise both MCP transports, REST, hash chaining, privacy, forged evidence, duplicate claims, connector failures, and historical rechecks.
 
-Run `npm run doctor` with local GitHub configuration to verify MCP startup and all fourteen tools. It checks credential presence, not token permissions. `npm run doctor -- --json` is the machine-readable form; `npm run bug-report` produces the redacted support bundle used for issues. `npm run docs:errors` must leave `docs/ERRORS.md` unchanged (a core test enforces it), and `npm run evaluate:github` regenerates the public evaluation deliberately; ordinary test runs never touch it.
+Run `npm run doctor` with local GitHub configuration to verify MCP startup and all fourteen tools. It checks credential presence, not token permissions. `npm run doctor -- --json` is the machine-readable form; `npm run bug-report` produces the redacted support bundle used for issues. `npm run docs:errors` must leave `docs/ERRORS.md` unchanged (a core test enforces it), and `npm run evaluate:connectors` regenerates the public connector evaluations deliberately; ordinary test runs never touch them, and each connector's tests fail if its committed evaluation does not match the current package version.
 
 Run the explicitly gated real [GitHub example](../examples/github-issues/README.md) in a test repository. Preserve its local proof JSON for inspection. Its audit and credential values must not be committed or uploaded. The v0.2 implementation was exercised against the real GitHub API on 2026-09-25: lost-response recovery, duplicate refusal, independent receipt, matching recheck, edited-object mismatch, original history retention, and fixture closure passed. A recovered interrupted run and a fresh end-to-end run both succeeded.
 
 ## Publication order
 
-After review, authenticate an npm account authorized for the `@77systems` scope or use a separately configured trusted-publishing workflow. Publish in dependency order:
+`.github/workflows/publish.yml` publishes on a `v*` tag from GitHub Actions with provenance. It checks that the tag equals every public package version, runs the validation above, and publishes in dependency order, skipping versions already on the registry so a failed run can resume. It runs in the `npm-publish` environment; give that environment required reviewers before any tag is pushed. Publishing with provenance requires GitHub Actions (or another supported CI); a publish from a workstation cannot attach provenance. The dependency order, if publishing by hand without provenance:
 
 ```sh
 npm publish -w @77systems/receipts-core --access public
 npm publish -w @77systems/receipts-sdk --access public
-npm publish -w @77systems/receipts-github --access public
-npm publish -w @77systems/receipts-conformance --access public
 npm publish -w @77systems/receipts-proof --access public
 npm publish -w @77systems/receipts-otel --access public
+npm publish -w @77systems/receipts-conformance --access public
+npm publish -w @77systems/receipts-github --access public
+npm publish -w @77systems/receipts-file --access public
+npm publish -w @77systems/receipts-gmail --access public
 npm publish -w @77systems/receipts-mcp --access public
 npm publish -w @77systems/receipts-rest --access public
 npm publish -w @77systems/receipts-claude-plugin --access public
@@ -31,7 +33,7 @@ npm publish -w @77systems/receipts-claude-plugin --access public
 From a clean directory, verify the published MCP package starts and lists fourteen tools. The explicit setup-check invocation is:
 
 ```sh
-npx -y --package=@77systems/receipts-mcp@0.3.0 receipts doctor
+npx -y --package=@77systems/receipts-mcp@0.4.0 receipts doctor
 ```
 
 Source tests and pack dry-runs are not evidence of npm publication. Do not tag a release to trigger an external publishing workflow until publication has been authorized and configured. Registry and marketplace submissions are outside this milestone.
